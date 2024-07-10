@@ -26,4 +26,10 @@ ruff==0.4.7
 trio==0.25.1
 trio-typing==0.10.0
 trustme==1.1.0
-uvicorn==0.30.0
+uvicorn==0.30.1
+
+# Benchmarking and profiling
+aiohttp==3.9.5
+urllib3==2.2.2
+matplotlib==3.7.5
+pyinstrument==4.6.2

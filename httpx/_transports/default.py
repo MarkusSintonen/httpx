@@ -276,6 +276,7 @@ class AsyncHTTPTransport(AsyncBaseTransport):
         local_address: str | None = None,
         retries: int = 0,
         socket_options: typing.Iterable[SOCKET_OPTION] | None = None,
+        backend: typing.Optional[typing.Any] = None,
     ) -> None:
         ssl_context = create_ssl_context(verify=verify, cert=cert, trust_env=trust_env)
         proxy = Proxy(url=proxy) if isinstance(proxy, (str, URL)) else proxy
@@ -292,6 +293,7 @@ class AsyncHTTPTransport(AsyncBaseTransport):
                 local_address=local_address,
                 retries=retries,
                 socket_options=socket_options,
+                network_backend=backend,
             )
         elif proxy.url.scheme in ("http", "https"):
             self._pool = httpcore.AsyncHTTPProxy(
