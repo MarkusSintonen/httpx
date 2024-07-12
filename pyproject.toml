@@ -29,7 +29,7 @@ classifiers = [
 ]
 dependencies = [
     "certifi",
-    "httpcore==1.*",
+    "httpcore @ git+https://github.com/MarkusSintonen/httpcore.git@all-optimizations",
     "anyio",
     "idna",
     "sniffio",
@@ -75,6 +75,9 @@ include = [
     "/README.md",
     "/tests",
 ]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.metadata.hooks.fancy-pypi-readme]
 content-type = "text/markdown"
