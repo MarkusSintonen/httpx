@@ -8,7 +8,7 @@ import pytest
 import httpx
 
 
-@pytest.mark.anyio
+
 async def test_get(server):
     url = server.url
     async with httpx.AsyncClient(http2=True) as client:
@@ -29,14 +29,14 @@ async def test_get(server):
         pytest.param("http://", id="no-host"),
     ],
 )
-@pytest.mark.anyio
+
 async def test_get_invalid_url(server, url):
     async with httpx.AsyncClient() as client:
         with pytest.raises((httpx.UnsupportedProtocol, httpx.LocalProtocolError)):
             await client.get(url)
 
 
-@pytest.mark.anyio
+
 async def test_build_request(server):
     url = server.url.copy_with(path="/echo_headers")
     headers = {"Custom-header": "value"}
@@ -51,7 +51,7 @@ async def test_build_request(server):
     assert response.json()["Custom-header"] == "value"
 
 
-@pytest.mark.anyio
+
 async def test_post(server):
     url = server.url
     async with httpx.AsyncClient() as client:
@@ -59,7 +59,7 @@ async def test_post(server):
     assert response.status_code == 200
 
 
-@pytest.mark.anyio
+
 async def test_post_json(server):
     url = server.url
     async with httpx.AsyncClient() as client:
@@ -67,7 +67,7 @@ async def test_post_json(server):
     assert response.status_code == 200
 
 
-@pytest.mark.anyio
+
 async def test_stream_response(server):
     async with httpx.AsyncClient() as client:
         async with client.stream("GET", server.url) as response:
@@ -78,7 +78,7 @@ async def test_stream_response(server):
     assert response.content == b"Hello, world!"
 
 
-@pytest.mark.anyio
+
 async def test_access_content_stream_response(server):
     async with httpx.AsyncClient() as client:
         async with client.stream("GET", server.url) as response:
@@ -89,7 +89,7 @@ async def test_access_content_stream_response(server):
         response.content  # noqa: B018
 
 
-@pytest.mark.anyio
+
 async def test_stream_request(server):
     async def hello_world() -> typing.AsyncIterator[bytes]:
         yield b"Hello, "
@@ -100,7 +100,7 @@ async def test_stream_request(server):
     assert response.status_code == 200
 
 
-@pytest.mark.anyio
+
 async def test_cannot_stream_sync_request(server):
     def hello_world() -> typing.Iterator[bytes]:  # pragma: no cover
         yield b"Hello, "
@@ -111,7 +111,7 @@ async def test_cannot_stream_sync_request(server):
             await client.post(server.url, content=hello_world())
 
 
-@pytest.mark.anyio
+
 async def test_raise_for_status(server):
     async with httpx.AsyncClient() as client:
         for status_code in (200, 400, 404, 500, 505):
@@ -127,7 +127,7 @@ async def test_raise_for_status(server):
                 assert response.raise_for_status() is response
 
 
-@pytest.mark.anyio
+
 async def test_options(server):
     async with httpx.AsyncClient() as client:
         response = await client.options(server.url)
@@ -135,7 +135,7 @@ async def test_options(server):
     assert response.text == "Hello, world!"
 
 
-@pytest.mark.anyio
+
 async def test_head(server):
     async with httpx.AsyncClient() as client:
         response = await client.head(server.url)
@@ -143,21 +143,21 @@ async def test_head(server):
     assert response.text == ""
 
 
-@pytest.mark.anyio
+
 async def test_put(server):
     async with httpx.AsyncClient() as client:
         response = await client.put(server.url, content=b"Hello, world!")
     assert response.status_code == 200
 
 
-@pytest.mark.anyio
+
 async def test_patch(server):
     async with httpx.AsyncClient() as client:
         response = await client.patch(server.url, content=b"Hello, world!")
     assert response.status_code == 200
 
 
-@pytest.mark.anyio
+
 async def test_delete(server):
     async with httpx.AsyncClient() as client:
         response = await client.delete(server.url)
@@ -165,7 +165,7 @@ async def test_delete(server):
     assert response.text == "Hello, world!"
 
 
-@pytest.mark.anyio
+
 async def test_100_continue(server):
     headers = {"Expect": "100-continue"}
     content = b"Echo request body"
@@ -179,7 +179,7 @@ async def test_100_continue(server):
     assert response.content == content
 
 
-@pytest.mark.anyio
+
 async def test_context_managed_transport():
     class Transport(httpx.AsyncBaseTransport):
         def __init__(self) -> None:
@@ -211,7 +211,7 @@ async def test_context_managed_transport():
     ]
 
 
-@pytest.mark.anyio
+
 async def test_context_managed_transport_and_mount():
     class Transport(httpx.AsyncBaseTransport):
         def __init__(self, name: str) -> None:
@@ -256,7 +256,7 @@ def hello_world(request):
     return httpx.Response(200, text="Hello, world!")
 
 
-@pytest.mark.anyio
+
 async def test_client_closed_state_using_implicit_open():
     client = httpx.AsyncClient(transport=httpx.MockTransport(hello_world))
 
@@ -277,7 +277,7 @@ async def test_client_closed_state_using_implicit_open():
             pass  # pragma: no cover
 
 
-@pytest.mark.anyio
+
 async def test_client_closed_state_using_with_block():
     async with httpx.AsyncClient(transport=httpx.MockTransport(hello_world)) as client:
         assert not client.is_closed
@@ -298,7 +298,7 @@ def mounted(request: httpx.Request) -> httpx.Response:
     return httpx.Response(200, json=data)
 
 
-@pytest.mark.anyio
+
 async def test_mounted_transport():
     transport = httpx.MockTransport(unmounted)
     mounts = {"custom://": httpx.MockTransport(mounted)}
@@ -313,7 +313,7 @@ async def test_mounted_transport():
         assert response.json() == {"app": "mounted"}
 
 
-@pytest.mark.anyio
+
 async def test_async_mock_transport():
     async def hello_world(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, text="Hello, world!")
@@ -326,7 +326,7 @@ async def test_async_mock_transport():
         assert response.text == "Hello, world!"
 
 
-@pytest.mark.anyio
+
 async def test_cancellation_during_stream():
     """
     If any BaseException is raised during streaming the response, then the
@@ -366,7 +366,7 @@ async def test_cancellation_during_stream():
         assert stream_was_closed
 
 
-@pytest.mark.anyio
+
 async def test_server_extensions(server):
     url = server.url
     async with httpx.AsyncClient(http2=True) as client:

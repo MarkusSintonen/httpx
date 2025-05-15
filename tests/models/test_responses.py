@@ -348,7 +348,7 @@ def test_empty_read():
     assert response.is_closed
 
 
-@pytest.mark.anyio
+
 async def test_aread():
     response = httpx.Response(
         200,
@@ -367,7 +367,7 @@ async def test_aread():
     assert response.is_closed
 
 
-@pytest.mark.anyio
+
 async def test_empty_aread():
     response = httpx.Response(200)
 
@@ -467,7 +467,7 @@ def test_iter_raw_increments_updates_counter():
         num_downloaded = response.num_bytes_downloaded
 
 
-@pytest.mark.anyio
+
 async def test_aiter_raw():
     response = httpx.Response(200, content=async_streaming_body())
 
@@ -477,7 +477,7 @@ async def test_aiter_raw():
     assert raw == b"Hello, world!"
 
 
-@pytest.mark.anyio
+
 async def test_aiter_raw_with_chunksize():
     response = httpx.Response(200, content=async_streaming_body())
 
@@ -495,7 +495,7 @@ async def test_aiter_raw_with_chunksize():
     assert parts == [b"Hello, world!"]
 
 
-@pytest.mark.anyio
+
 async def test_aiter_raw_on_sync():
     response = httpx.Response(
         200,
@@ -506,7 +506,7 @@ async def test_aiter_raw_on_sync():
         [part async for part in response.aiter_raw()]
 
 
-@pytest.mark.anyio
+
 async def test_aclose_on_sync():
     response = httpx.Response(
         200,
@@ -517,7 +517,7 @@ async def test_aclose_on_sync():
         await response.aclose()
 
 
-@pytest.mark.anyio
+
 async def test_aiter_raw_increments_updates_counter():
     response = httpx.Response(200, content=async_streaming_body())
 
@@ -569,7 +569,7 @@ def test_iter_bytes_doesnt_return_empty_chunks():
     assert parts == [b"Hello, ", b"world!"]
 
 
-@pytest.mark.anyio
+
 async def test_aiter_bytes():
     response = httpx.Response(
         200,
@@ -582,7 +582,7 @@ async def test_aiter_bytes():
     assert content == b"Hello, world!"
 
 
-@pytest.mark.anyio
+
 async def test_aiter_bytes_with_chunk_size():
     response = httpx.Response(200, content=async_streaming_body())
     parts = [part async for part in response.aiter_bytes(chunk_size=5)]
@@ -631,7 +631,7 @@ def test_iter_text_with_chunk_size():
     assert parts == ["Hello, world!"]
 
 
-@pytest.mark.anyio
+
 async def test_aiter_text():
     response = httpx.Response(
         200,
@@ -644,7 +644,7 @@ async def test_aiter_text():
     assert content == "Hello, world!"
 
 
-@pytest.mark.anyio
+
 async def test_aiter_text_with_chunk_size():
     response = httpx.Response(200, content=b"Hello, world!")
     parts = [part async for part in response.aiter_text(chunk_size=5)]
@@ -668,7 +668,7 @@ def test_iter_lines():
     assert content == ["Hello,", "world!"]
 
 
-@pytest.mark.anyio
+
 async def test_aiter_lines():
     response = httpx.Response(
         200,
@@ -697,7 +697,7 @@ def test_sync_streaming_response():
     assert response.is_closed
 
 
-@pytest.mark.anyio
+
 async def test_async_streaming_response():
     response = httpx.Response(
         200,
@@ -728,7 +728,7 @@ def test_cannot_read_after_stream_consumed():
         response.read()
 
 
-@pytest.mark.anyio
+
 async def test_cannot_aread_after_stream_consumed():
     response = httpx.Response(
         200,
@@ -754,7 +754,7 @@ def test_cannot_read_after_response_closed():
         response.read()
 
 
-@pytest.mark.anyio
+
 async def test_cannot_aread_after_response_closed():
     response = httpx.Response(
         200,
@@ -766,7 +766,7 @@ async def test_cannot_aread_after_response_closed():
         await response.aread()
 
 
-@pytest.mark.anyio
+
 async def test_elapsed_not_available_until_closed():
     response = httpx.Response(
         200,
@@ -973,7 +973,7 @@ def test_response_picklable():
     assert pickle_response.history == []
 
 
-@pytest.mark.anyio
+
 async def test_response_async_streaming_picklable():
     response = httpx.Response(200, content=async_streaming_body())
     pickle_response = pickle.loads(pickle.dumps(response))

@@ -10,3 +10,7 @@ venv*/
 .python-version
 build/
 dist/
+
+.rustimport-cache
+*.so
+**/reqwest_native/target/**
