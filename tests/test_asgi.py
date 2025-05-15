@@ -70,7 +70,7 @@ async def raise_exc_after_response(scope, receive, send):
     raise RuntimeError()
 
 
-@pytest.mark.anyio
+
 async def test_asgi_transport():
     async with httpx.ASGITransport(app=hello_world) as transport:
         request = httpx.Request("GET", "http://www.example.com/")
@@ -80,7 +80,7 @@ async def test_asgi_transport():
         assert response.content == b"Hello, World!"
 
 
-@pytest.mark.anyio
+
 async def test_asgi_transport_no_body():
     async with httpx.ASGITransport(app=echo_body) as transport:
         request = httpx.Request("GET", "http://www.example.com/")
@@ -90,7 +90,7 @@ async def test_asgi_transport_no_body():
         assert response.content == b""
 
 
-@pytest.mark.anyio
+
 async def test_asgi():
     transport = httpx.ASGITransport(app=hello_world)
     async with httpx.AsyncClient(transport=transport) as client:
@@ -100,7 +100,7 @@ async def test_asgi():
     assert response.text == "Hello, World!"
 
 
-@pytest.mark.anyio
+
 async def test_asgi_urlencoded_path():
     transport = httpx.ASGITransport(app=echo_path)
     async with httpx.AsyncClient(transport=transport) as client:
@@ -111,7 +111,7 @@ async def test_asgi_urlencoded_path():
     assert response.json() == {"path": "/user@example.org"}
 
 
-@pytest.mark.anyio
+
 async def test_asgi_raw_path():
     transport = httpx.ASGITransport(app=echo_raw_path)
     async with httpx.AsyncClient(transport=transport) as client:
@@ -122,7 +122,7 @@ async def test_asgi_raw_path():
     assert response.json() == {"raw_path": "/user@example.org"}
 
 
-@pytest.mark.anyio
+
 async def test_asgi_raw_path_should_not_include_querystring_portion():
     """
     See https://github.com/encode/httpx/issues/2810
@@ -136,7 +136,7 @@ async def test_asgi_raw_path_should_not_include_querystring_portion():
     assert response.json() == {"raw_path": "/path"}
 
 
-@pytest.mark.anyio
+
 async def test_asgi_upload():
     transport = httpx.ASGITransport(app=echo_body)
     async with httpx.AsyncClient(transport=transport) as client:
@@ -146,7 +146,7 @@ async def test_asgi_upload():
     assert response.text == "example"
 
 
-@pytest.mark.anyio
+
 async def test_asgi_headers():
     transport = httpx.ASGITransport(app=echo_headers)
     async with httpx.AsyncClient(transport=transport) as client:
@@ -164,7 +164,7 @@ async def test_asgi_headers():
     }
 
 
-@pytest.mark.anyio
+
 async def test_asgi_exc():
     transport = httpx.ASGITransport(app=raise_exc)
     async with httpx.AsyncClient(transport=transport) as client:
@@ -172,7 +172,7 @@ async def test_asgi_exc():
             await client.get("http://www.example.org/")
 
 
-@pytest.mark.anyio
+
 async def test_asgi_exc_after_response():
     transport = httpx.ASGITransport(app=raise_exc_after_response)
     async with httpx.AsyncClient(transport=transport) as client:
@@ -180,7 +180,7 @@ async def test_asgi_exc_after_response():
             await client.get("http://www.example.org/")
 
 
-@pytest.mark.anyio
+
 async def test_asgi_disconnect_after_response_complete():
     disconnect = False
 
@@ -215,7 +215,7 @@ async def test_asgi_disconnect_after_response_complete():
     assert disconnect
 
 
-@pytest.mark.anyio
+
 async def test_asgi_exc_no_raise():
     transport = httpx.ASGITransport(app=raise_exc, raise_app_exceptions=False)
     async with httpx.AsyncClient(transport=transport) as client:

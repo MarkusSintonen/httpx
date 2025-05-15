@@ -9,6 +9,7 @@ import warnings
 from contextlib import asynccontextmanager, contextmanager
 from types import TracebackType
 
+from ._transports.reqwest import AsyncReqwestHTTPTransport
 from .__version__ import __version__
 from ._auth import Auth, BasicAuth, FunctionAuth
 from ._config import (
@@ -1442,12 +1443,10 @@ class AsyncClient(BaseClient):
         if transport is not None:
             return transport
 
-        return AsyncHTTPTransport(
-            verify=verify,
-            cert=cert,
-            trust_env=trust_env,
+        return AsyncReqwestHTTPTransport(
             http1=http1,
             http2=http2,
+            timeout=self.timeout,
             limits=limits,
         )
 
