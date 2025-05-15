@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ssl
 import typing
 from datetime import timedelta
 
@@ -16,9 +17,30 @@ async def test_get(server):
     assert response.status_code == 200
     assert response.text == "Hello, world!"
     assert response.http_version == "HTTP/1.1"
+    assert response.url.scheme == "http"
     assert response.headers
     assert repr(response) == "<Response [200 OK]>"
     assert response.elapsed > timedelta(seconds=0)
+
+
+async def test_get_https(https_server, client_pem_file):
+    ssl_context = ssl.create_default_context(cafile=client_pem_file)
+    async with httpx.AsyncClient(http2=True, verify=ssl_context) as client:
+        response = await client.get(https_server.url)
+    assert response.status_code == 200
+    assert response.text == "Hello, world!"
+    assert response.http_version == "HTTP/1.1"
+    assert response.url.scheme == "https"
+    assert response.headers
+    assert repr(response) == "<Response [200 OK]>"
+    assert response.elapsed > timedelta(seconds=0)
+
+
+async def test_get_https__fails_not_trusted(https_server):
+    ssl_context = ssl.create_default_context()
+    async with httpx.AsyncClient(http2=True, verify=ssl_context) as client:
+        with pytest.raises(httpx.ConnectError):
+            await client.get(https_server.url)
 
 
 @pytest.mark.parametrize(

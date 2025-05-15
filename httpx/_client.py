@@ -19,6 +19,7 @@ from ._config import (
     Limits,
     Proxy,
     Timeout,
+    create_ssl_context,
 )
 from ._decoders import SUPPORTED_DECODERS
 from ._exceptions import (
@@ -1448,6 +1449,7 @@ class AsyncClient(BaseClient):
             http2=http2,
             timeout=self.timeout,
             limits=limits,
+            ssl_context=create_ssl_context(verify=verify, cert=cert, trust_env=trust_env),
         )
 
     def _init_proxy_transport(

@@ -1,9 +1,13 @@
 import asyncio
 import json
 import os
+import socket
+import tempfile
 import threading
 import time
 import typing
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
 
 import pytest
 import trustme
@@ -189,12 +193,18 @@ def cert_authority():
 
 @pytest.fixture(scope="session")
 def localhost_cert(cert_authority):
-    return cert_authority.issue_cert("localhost")
+    return cert_authority.issue_cert("localhost", "127.0.0.1")
 
 
 @pytest.fixture(scope="session")
 def cert_pem_file(localhost_cert):
     with localhost_cert.cert_chain_pems[0].tempfile() as tmp:
+        yield tmp
+
+
+@pytest.fixture(scope="session")
+def client_pem_file(cert_authority):
+    with cert_authority.cert_pem.tempfile() as tmp:
         yield tmp
 
 
@@ -280,8 +290,23 @@ def serve_in_thread(server: TestServer) -> typing.Iterator[TestServer]:
         thread.join()
 
 
+def find_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('', 0))
+        return s.getsockname()[1]
+
+
 @pytest.fixture(scope="session")
 def server() -> typing.Iterator[TestServer]:
-    config = Config(app=app, lifespan="off", loop="asyncio")
+    config = Config(app=app, port=find_free_port(), lifespan="off", loop="asyncio")
+    server = TestServer(config=config)
+    yield from serve_in_thread(server)
+
+
+@pytest.fixture(scope="session")
+def https_server(cert_private_key_file, cert_pem_file) -> typing.Iterator[TestServer]:
+    config = Config(
+        app=app, port=find_free_port(), lifespan="off", loop="asyncio", ssl_keyfile=cert_private_key_file, ssl_certfile=cert_pem_file
+    )
     server = TestServer(config=config)
     yield from serve_in_thread(server)
