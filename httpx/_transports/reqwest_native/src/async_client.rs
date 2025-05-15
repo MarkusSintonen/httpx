@@ -41,6 +41,7 @@ impl NativeAsyncClient {
         max_connections: Option<usize>,
         http1: bool,
         http2: bool,
+        root_certificates_der: Option<Vec<Vec<u8>>>,
     ) -> PyResult<Self> {
         if !http1 && !http2 {
             return Err(PyValueError::new_err(
@@ -77,6 +78,15 @@ impl NativeAsyncClient {
         if let Some(pool_max_idle_per_host) = pool_max_idle_per_host {
             client = client.pool_max_idle_per_host(pool_max_idle_per_host);
         }
+        if let Some(root_certificates_der) = root_certificates_der {
+            for cert in root_certificates_der {
+                client =
+                    client.add_root_certificate(reqwest::Certificate::from_der(&cert).map_err(
+                        |e| PyValueError::new_err(format!("Invalid certificate: {}", e)),
+                    )?);
+            }
+        }
+        
         let client = client
             .build()
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to create HTTP client: {}", e)))?;

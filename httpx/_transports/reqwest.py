@@ -1,3 +1,4 @@
+import ssl
 from collections.abc import AsyncIterable, AsyncIterator, Generator
 from contextlib import contextmanager
 from datetime import timedelta
@@ -18,7 +19,9 @@ from .._exceptions import (
 from .._models import Request, Response
 from .._types import AsyncByteStream
 from . import AsyncBaseTransport
-from .reqwest_native import (  # type: ignore[attr-defined]
+
+import rustimport.import_hook  # noqa:F401
+from .reqwest_native import (
     BadUrlError,
     NativeAsyncClient,
     PoolTimeoutError,
@@ -36,6 +39,7 @@ class AsyncReqwestHTTPTransport(AsyncBaseTransport):
         http2: bool = False,
         timeout: Timeout | None = None,
         limits: Limits = DEFAULT_LIMITS,
+        ssl_context: ssl.SSLContext | None = None,
     ) -> None:
         self._client = NativeAsyncClient(
             total_timeout=self._total_timeout(timeout),
@@ -46,8 +50,8 @@ class AsyncReqwestHTTPTransport(AsyncBaseTransport):
             max_connections=limits.max_connections,
             http1=http1,
             http2=http2,
+            root_certificates_der=ssl_context.get_ca_certs(binary_form=True) if ssl_context else None,
         )
-        self.timeout = timeout
 
     def _total_timeout(self, timeout: Timeout | None) -> timedelta | None:
         # Workaround for https://github.com/seanmonstar/reqwest/issues/2403
