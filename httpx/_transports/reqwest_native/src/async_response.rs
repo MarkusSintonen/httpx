@@ -1,8 +1,9 @@
 use crate::exceptions::{ReadConnectionError, ReadTimeoutError, ReadUnknownError};
+use crate::utils::http_version_str;
 use pyo3::exceptions::{PyRuntimeError, PyStopAsyncIteration};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
-use reqwest::{Response, Version};
+use reqwest::Response;
 use std::sync::Arc;
 use tokio::sync::{Mutex, OwnedSemaphorePermit};
 
@@ -38,7 +39,7 @@ impl NativeAsyncResponse {
                 .iter()
                 .map(|(k, v)| (k.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
                 .collect(),
-            http_version: Self::http_version_str(response.version())?,
+            http_version: http_version_str(response.version())?,
             response: Some(Arc::new(Mutex::new(response))),
             request_semaphore_permit,
         };
@@ -83,17 +84,6 @@ impl NativeAsyncResponse {
 }
 
 impl NativeAsyncResponse {
-    fn http_version_str(version: Version) -> PyResult<String> {
-        match version {
-            Version::HTTP_09 => Ok("HTTP/0.9".to_string()),
-            Version::HTTP_10 => Ok("HTTP/1.0".to_string()),
-            Version::HTTP_11 => Ok("HTTP/1.1".to_string()),
-            Version::HTTP_2 => Ok("HTTP/2".to_string()),
-            Version::HTTP_3 => Ok("HTTP/3".to_string()),
-            _ => Err(PyRuntimeError::new_err("Unknown HTTP version in response")),
-        }
-    }
-
     fn map_read_error(error: reqwest::Error) -> PyErr {
         if error.is_connect() {
             ReadConnectionError::new_err(format!("Connection error on read: {}", error))

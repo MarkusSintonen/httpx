@@ -56,11 +56,12 @@ def test_logging_request(server, caplog):
         response = client.get(server.url)
         assert response.status_code == 200
 
+    port = server.config.port
     assert caplog.record_tuples == [
         (
             "httpx",
             logging.INFO,
-            'HTTP Request: GET http://127.0.0.1:8000/ "HTTP/1.1 200 OK"',
+            f'HTTP Request: GET http://127.0.0.1:{port}/ "HTTP/1.1 200 OK"',
         )
     ]
 
@@ -71,17 +72,18 @@ def test_logging_redirect_chain(server, caplog):
         response = client.get(server.url.copy_with(path="/redirect_301"))
         assert response.status_code == 200
 
+    port = server.config.port
     assert caplog.record_tuples == [
         (
             "httpx",
             logging.INFO,
-            "HTTP Request: GET http://127.0.0.1:8000/redirect_301"
+            f"HTTP Request: GET http://127.0.0.1:{port}/redirect_301"
             ' "HTTP/1.1 301 Moved Permanently"',
         ),
         (
             "httpx",
             logging.INFO,
-            'HTTP Request: GET http://127.0.0.1:8000/ "HTTP/1.1 200 OK"',
+            f'HTTP Request: GET http://127.0.0.1:{port}/ "HTTP/1.1 200 OK"',
         ),
     ]
 
