@@ -1,15 +1,16 @@
 use crate::async_response::NativeAsyncResponse;
 use crate::exceptions::{
-    BadHeaderError, BadMethodError, BadUrlError, PoolTimeoutError, SendConnectionError,
-    SendTimeoutError, SendUnknownError,
+    BadHeaderError, BadUrlError, PoolTimeoutError, SendConnectionError, SendTimeoutError,
+    SendUnknownError,
 };
+use crate::proxy_config::NativeProxyConfig;
+use crate::utils::{parse_method, parse_url};
 use futures_util::stream::StreamExt;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use reqwest::header::{HeaderName, HeaderValue};
-use reqwest::{Body, Client, IntoUrl};
-use reqwest::{Method, Url};
+use reqwest::{Body, Client};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -19,6 +20,8 @@ pub struct NativeAsyncClient {
     client: Option<Client>,
     request_semaphore: Option<Arc<Semaphore>>,
     connect_timeout: Option<Duration>,
+    #[pyo3(get)]
+    proxy: Option<NativeProxyConfig>,
 }
 
 impl Drop for NativeAsyncClient {
@@ -42,6 +45,7 @@ impl NativeAsyncClient {
         http1: bool,
         http2: bool,
         root_certificates_der: Option<Vec<Vec<u8>>>,
+        proxy: Option<NativeProxyConfig>,
     ) -> PyResult<Self> {
         if !http1 && !http2 {
             return Err(PyValueError::new_err(
@@ -86,7 +90,10 @@ impl NativeAsyncClient {
                     )?);
             }
         }
-        
+        if let Some(proxy) = &proxy {
+            client = client.proxy(proxy.build_reqwest_proxy()?);
+        }
+
         let client = client
             .build()
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to create HTTP client: {}", e)))?;
@@ -95,6 +102,7 @@ impl NativeAsyncClient {
             client: Some(client),
             request_semaphore: max_connections.map(|limit| Arc::new(Semaphore::new(limit))),
             connect_timeout,
+            proxy,
         })
     }
 
@@ -112,8 +120,14 @@ impl NativeAsyncClient {
             .clone()
             .ok_or_else(|| PyRuntimeError::new_err("Client is not initialized"))?;
 
-        let method = Self::parse_method(method)?;
-        let url = Self::parse_url(url)?;
+        let method = parse_method(method)?;
+        let url = parse_url(url)?;
+        if url.scheme() != "http" && url.scheme() != "https" {
+            return Err(BadUrlError::new_err(format!(
+                "Invalid URL scheme: {}",
+                url.scheme()
+            )));
+        }
 
         let body = content
             .map(|content| {
@@ -180,24 +194,6 @@ impl NativeAsyncClient {
 }
 
 impl NativeAsyncClient {
-    fn parse_method(method: String) -> Result<Method, PyErr> {
-        Method::from_bytes(method.as_bytes())
-            .map_err(|e| BadMethodError::new_err(format!("Invalid HTTP method: {}", e)))
-    }
-
-    fn parse_url<U: IntoUrl>(url: U) -> Result<Url, PyErr> {
-        let url = url
-            .into_url()
-            .map_err(|e| BadUrlError::new_err(format!("Invalid URL: {}", e)))?;
-        if url.scheme() != "http" && url.scheme() != "https" {
-            return Err(BadUrlError::new_err(format!(
-                "Invalid URL scheme: {}",
-                url.scheme()
-            )));
-        }
-        Ok(url)
-    }
-
     fn map_send_error(error: reqwest::Error) -> PyErr {
         if error.is_connect() {
             SendConnectionError::new_err(format!("Connection error on send: {}", error))

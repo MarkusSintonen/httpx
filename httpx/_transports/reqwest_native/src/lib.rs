@@ -3,6 +3,8 @@
 mod async_client;
 mod async_response;
 mod exceptions;
+mod proxy_config;
+mod utils;
 
 use crate::async_client::NativeAsyncClient;
 use crate::async_response::NativeAsyncResponse;
@@ -10,12 +12,14 @@ use crate::exceptions::{
     BadHeaderError, BadMethodError, BadUrlError, PoolTimeoutError, ReadConnectionError,
     ReadTimeoutError, ReadUnknownError, SendConnectionError, SendTimeoutError, SendUnknownError,
 };
+use crate::proxy_config::NativeProxyConfig;
 use pyo3::prelude::*;
 
 #[pymodule]
 fn reqwest_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NativeAsyncClient>()?;
     module.add_class::<NativeAsyncResponse>()?;
+    module.add_class::<NativeProxyConfig>()?;
 
     module.add("BadMethodError", module.py().get_type::<BadMethodError>())?;
     module.add("BadUrlError", module.py().get_type::<BadUrlError>())?;

@@ -6,7 +6,7 @@ from types import TracebackType
 
 from typing_extensions import Self
 
-from .._config import DEFAULT_LIMITS, Limits, Timeout
+from .._config import DEFAULT_LIMITS, Limits, Timeout, Proxy
 from .._content import ByteStream
 from .._exceptions import (
     ConnectError as HttpxConnectError,
@@ -24,6 +24,7 @@ import rustimport.import_hook  # noqa:F401
 from .reqwest_native import (
     BadUrlError,
     NativeAsyncClient,
+    NativeProxyConfig,
     PoolTimeoutError,
     ReadConnectionError,
     ReadTimeoutError,
@@ -40,6 +41,7 @@ class AsyncReqwestHTTPTransport(AsyncBaseTransport):
         timeout: Timeout | None = None,
         limits: Limits = DEFAULT_LIMITS,
         ssl_context: ssl.SSLContext | None = None,
+        proxy: Proxy | None = None,
     ) -> None:
         self._client = NativeAsyncClient(
             total_timeout=self._total_timeout(timeout),
@@ -51,6 +53,16 @@ class AsyncReqwestHTTPTransport(AsyncBaseTransport):
             http1=http1,
             http2=http2,
             root_certificates_der=ssl_context.get_ca_certs(binary_form=True) if ssl_context else None,
+            proxy=self._proxy_config(proxy),
+        )
+
+    def _proxy_config(self, proxy: Proxy | None) -> NativeProxyConfig | None:
+        if proxy is None:
+            return None
+        return NativeProxyConfig(
+            url=str(proxy.url),
+            basic_auth=proxy.raw_auth,
+            headers=proxy.headers.raw,
         )
 
     def _total_timeout(self, timeout: Timeout | None) -> timedelta | None:

@@ -1462,13 +1462,12 @@ class AsyncClient(BaseClient):
         http2: bool = False,
         limits: Limits = DEFAULT_LIMITS,
     ) -> AsyncBaseTransport:
-        return AsyncHTTPTransport(
-            verify=verify,
-            cert=cert,
-            trust_env=trust_env,
+        return AsyncReqwestHTTPTransport(
             http1=http1,
             http2=http2,
+            timeout=self.timeout,
             limits=limits,
+            ssl_context=create_ssl_context(verify=verify, cert=cert, trust_env=trust_env),
             proxy=proxy,
         )
 
