@@ -4,20 +4,22 @@ use crate::exceptions::{
     SendUnknownError,
 };
 use crate::proxy_config::NativeProxyConfig;
-use crate::utils::{parse_method, parse_url};
+use crate::trace::TraceMiddleware;
+use crate::utils::{Extensions, parse_method, parse_url};
 use futures_util::stream::StreamExt;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use reqwest::header::{HeaderName, HeaderValue};
 use reqwest::{Body, Client};
+use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 #[pyclass]
 pub struct NativeAsyncClient {
-    client: Option<Client>,
+    client: Option<ClientWithMiddleware>,
     request_semaphore: Option<Arc<Semaphore>>,
     connect_timeout: Option<Duration>,
     #[pyo3(get)]
@@ -36,6 +38,7 @@ impl Drop for NativeAsyncClient {
 impl NativeAsyncClient {
     #[new]
     fn py_new(
+        py: Python,
         total_timeout: Option<Duration>,
         connect_timeout: Option<Duration>,
         read_timeout: Option<Duration>,
@@ -46,6 +49,7 @@ impl NativeAsyncClient {
         http2: bool,
         root_certificates_der: Option<Vec<Vec<u8>>>,
         proxy: Option<NativeProxyConfig>,
+        tracer: Option<Bound<PyAny>>,
     ) -> PyResult<Self> {
         if !http1 && !http2 {
             return Err(PyValueError::new_err(
@@ -97,9 +101,12 @@ impl NativeAsyncClient {
         let client = client
             .build()
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to create HTTP client: {}", e)))?;
+        let mut middleware_client = ClientBuilder::new(client);
+
+        middleware_client = middleware_client.with(TraceMiddleware::new(py, tracer)?);
 
         Ok(NativeAsyncClient {
-            client: Some(client),
+            client: Some(middleware_client.build()),
             request_semaphore: max_connections.map(|limit| Arc::new(Semaphore::new(limit))),
             connect_timeout,
             proxy,
@@ -114,6 +121,7 @@ impl NativeAsyncClient {
         headers: Option<Vec<(Vec<u8>, Vec<u8>)>>,
         content: Option<Bound<'py, PyAny>>,
         timeout: Option<Duration>,
+        extensions: Option<Extensions>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self
             .client
@@ -170,15 +178,11 @@ impl NativeAsyncClient {
             if let Some(timeout) = timeout {
                 req_builder = req_builder.timeout(timeout);
             }
+            if let Some(extensions) = extensions {
+                req_builder = req_builder.with_extension(extensions);
+            }
 
-            let request = req_builder
-                .build()
-                .map_err(|e| PyRuntimeError::new_err(format!("Invalid request: {}", e)))?;
-
-            let response = client
-                .execute(request)
-                .await
-                .map_err(Self::map_send_error)?;
+            let response = req_builder.send().await.map_err(Self::map_send_error)?;
 
             NativeAsyncResponse::new(response, permit)
         })
@@ -194,7 +198,7 @@ impl NativeAsyncClient {
 }
 
 impl NativeAsyncClient {
-    fn map_send_error(error: reqwest::Error) -> PyErr {
+    fn map_send_error(error: reqwest_middleware::Error) -> PyErr {
         if error.is_connect() {
             SendConnectionError::new_err(format!("Connection error on send: {}", error))
         } else if error.is_timeout() {

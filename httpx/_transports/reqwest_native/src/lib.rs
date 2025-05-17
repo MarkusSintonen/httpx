@@ -4,6 +4,7 @@ mod async_client;
 mod async_response;
 mod exceptions;
 mod proxy_config;
+mod trace;
 mod utils;
 
 use crate::async_client::NativeAsyncClient;

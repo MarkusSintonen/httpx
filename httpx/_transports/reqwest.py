@@ -17,7 +17,7 @@ from .._exceptions import (
     WriteTimeout as HttpxWriteTimeout,
 )
 from .._models import Request, Response
-from .._types import AsyncByteStream
+from .._types import AsyncByteStream, Tracer
 from . import AsyncBaseTransport
 
 import rustimport.import_hook  # noqa:F401
@@ -42,6 +42,7 @@ class AsyncReqwestHTTPTransport(AsyncBaseTransport):
         limits: Limits = DEFAULT_LIMITS,
         ssl_context: ssl.SSLContext | None = None,
         proxy: Proxy | None = None,
+        tracer: Tracer = None,
     ) -> None:
         self._client = NativeAsyncClient(
             total_timeout=self._total_timeout(timeout),
@@ -54,6 +55,7 @@ class AsyncReqwestHTTPTransport(AsyncBaseTransport):
             http2=http2,
             root_certificates_der=ssl_context.get_ca_certs(binary_form=True) if ssl_context else None,
             proxy=self._proxy_config(proxy),
+            tracer=tracer,
         )
 
     def _proxy_config(self, proxy: Proxy | None) -> NativeProxyConfig | None:
@@ -110,15 +112,14 @@ class AsyncReqwestHTTPTransport(AsyncBaseTransport):
                 headers=request.headers.raw,
                 content=body_bytes if body_bytes is not None else bytes_iter,
                 timeout=None,
+                extensions=request.extensions,
             )
 
         return Response(
             status_code=resp.status,
             headers=resp.headers,
             stream=AsyncResponseStream(resp),
-            extensions={
-                "http_version": resp.http_version.encode("ascii"),
-            },
+            extensions=await resp.get_extensions(),
         )
 
     async def aclose(self) -> None:
