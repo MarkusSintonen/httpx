@@ -1,5 +1,5 @@
 use crate::exceptions::{ReadConnectionError, ReadTimeoutError, ReadUnknownError};
-use crate::utils::http_version_str;
+use crate::utils::{Extensions, extensions_to_dict, headers_to_bytes, http_version_str};
 use pyo3::exceptions::{PyRuntimeError, PyStopAsyncIteration};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -34,12 +34,8 @@ impl NativeAsyncResponse {
     ) -> PyResult<Self> {
         let response = NativeAsyncResponse {
             status: response.status().as_u16(),
-            headers: response
-                .headers()
-                .iter()
-                .map(|(k, v)| (k.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
-                .collect(),
-            http_version: http_version_str(response.version())?,
+            headers: headers_to_bytes(response.headers()),
+            http_version: http_version_str(response.version()),
             response: Some(Arc::new(Mutex::new(response))),
             request_semaphore_permit,
         };
@@ -67,6 +63,21 @@ impl NativeAsyncResponse {
                 Ok(None) => Err(PyStopAsyncIteration::new_err("End of stream")),
                 Err(e) => Err(Self::map_read_error(e)),
             }
+        })
+    }
+
+    fn get_extensions<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let response = self
+            .response
+            .clone()
+            .ok_or_else(|| PyRuntimeError::new_err("Response is not initialized"))?;
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let mut response = response.lock().await;
+            let ext = response
+                .extensions_mut()
+                .get_or_insert_with(Extensions::new);
+            Python::with_gil(|py| Ok(extensions_to_dict(py, ext)?.unbind()))
         })
     }
 

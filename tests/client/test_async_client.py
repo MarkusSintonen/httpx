@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ssl
 import typing
+from dataclasses import dataclass
 from datetime import timedelta
 
 import pytest
@@ -392,6 +393,61 @@ async def test_cancellation_during_stream():
 async def test_server_extensions(server):
     url = server.url
     async with httpx.AsyncClient(http2=True) as client:
-        response = await client.get(url)
+        response = await client.get(url, extensions={"something_custom": "foo"})
     assert response.status_code == 200
     assert response.extensions["http_version"] == b"HTTP/1.1"
+    assert response.extensions["something_custom"] == "foo"
+
+
+@pytest.mark.parametrize("extra", [1, "a", [1, 2], ["a", "b"], {"a": "b"}, b"123"])
+async def test_trace(server, extra):
+    url = server.url
+
+    @dataclass
+    class Tracer:
+        async def on_request_start(self, request_trace) -> None:
+            assert request_trace.request.method == "GET"
+            assert request_trace.request.url == str(url)
+            assert request_trace.extensions["something_custom"] == "foo"
+            request_trace.extensions["something_custom"] = "bar"
+            request_trace.extensions["extra"] = extra
+
+        async def on_request_end(self, response_trace) -> None:
+            assert response_trace.request.method == "GET"
+            assert response_trace.request.url == str(url)
+            assert response_trace.response.status_code == 200
+            assert response_trace.extensions["something_custom"] == "bar"
+            assert response_trace.extensions["extra"] == extra
+            response_trace.extensions["something_custom"] = "baz"
+
+    async with httpx.AsyncClient(http2=True, tracer=Tracer()) as client:
+        response = await client.get(url, extensions={"something_custom": "foo"})
+    assert response.status_code == 200
+    assert response.extensions["http_version"] == b"HTTP/1.1"
+    assert response.extensions["something_custom"] == "baz"
+    assert response.extensions["extra"] == extra
+
+
+@pytest.mark.parametrize("exc_request", [Exception("some_req_error"), None])
+@pytest.mark.parametrize("exc_response", [Exception("some_resp_error"), None])
+async def test_trace_exception(server, exc_request: Exception | None, exc_response: Exception | None):
+    @dataclass
+    class Tracer:
+        async def on_request_start(self, request_trace) -> None:
+            if exc_request:
+                raise exc_request
+
+        async def on_request_end(self, response_trace) -> None:
+            if exc_response:
+                raise exc_response
+
+    async with httpx.AsyncClient(http2=True, tracer=Tracer()) as client:
+        if exc_request or exc_response:
+            with pytest.raises(Exception) as e:
+                await client.get(server.url, extensions={"something_custom": "foo"})
+            assert e.value.__class__.__name__ == "SendUnknownError"
+            assert str(exc_request or exc_response) in str(e.value)
+        else:
+            response = await client.get(server.url, extensions={"something_custom": "foo"})
+            assert response.status_code == 200
+            assert response.extensions["something_custom"] == "foo"

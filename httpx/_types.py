@@ -18,7 +18,7 @@ from typing import (
     Optional,
     Sequence,
     Tuple,
-    Union,
+    Union, Protocol,
 )
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -112,3 +112,8 @@ class AsyncByteStream:
 
     async def aclose(self) -> None:
         pass
+
+
+class Tracer(Protocol):
+    async def on_request_start(self, request_info: Any) -> None: ...  # TODO arg type
+    async def on_request_end(self, response_info: Any) -> None: ...  # TODO arg type

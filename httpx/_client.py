@@ -45,7 +45,7 @@ from ._types import (
     RequestExtensions,
     RequestFiles,
     SyncByteStream,
-    TimeoutTypes,
+    TimeoutTypes, Tracer,
 )
 from ._urls import URL, QueryParams
 from ._utils import URLPattern, get_environment_proxies
@@ -1374,6 +1374,7 @@ class AsyncClient(BaseClient):
         transport: AsyncBaseTransport | None = None,
         trust_env: bool = True,
         default_encoding: str | typing.Callable[[bytes], str] = "utf-8",
+        tracer: Tracer = None,
     ) -> None:
         super().__init__(
             auth=auth,
@@ -1409,6 +1410,7 @@ class AsyncClient(BaseClient):
             http2=http2,
             limits=limits,
             transport=transport,
+            tracer=tracer,
         )
 
         self._mounts: dict[URLPattern, AsyncBaseTransport | None] = {
@@ -1440,6 +1442,7 @@ class AsyncClient(BaseClient):
         http2: bool = False,
         limits: Limits = DEFAULT_LIMITS,
         transport: AsyncBaseTransport | None = None,
+        tracer: Tracer = None,
     ) -> AsyncBaseTransport:
         if transport is not None:
             return transport
@@ -1450,6 +1453,7 @@ class AsyncClient(BaseClient):
             timeout=self.timeout,
             limits=limits,
             ssl_context=create_ssl_context(verify=verify, cert=cert, trust_env=trust_env),
+            tracer=tracer,
         )
 
     def _init_proxy_transport(
