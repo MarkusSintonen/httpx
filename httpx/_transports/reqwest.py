@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from datetime import timedelta
 from types import TracebackType
 
+from multidict import CIMultiDict
 from typing_extensions import Self
 
 from .._config import DEFAULT_LIMITS, Limits, Timeout, Proxy
@@ -16,8 +17,7 @@ from .._exceptions import (
     UnsupportedProtocol as HttpxUnsupportedProtocol,
     WriteTimeout as HttpxWriteTimeout,
 )
-from .._models import Request, Response
-from .._types import AsyncByteStream, Tracer
+from .._types import AsyncByteStream, Middleware
 from . import AsyncBaseTransport
 
 import rustimport.import_hook  # noqa:F401
@@ -42,7 +42,7 @@ class AsyncReqwestHTTPTransport(AsyncBaseTransport):
         limits: Limits = DEFAULT_LIMITS,
         ssl_context: ssl.SSLContext | None = None,
         proxy: Proxy | None = None,
-        tracer: Tracer = None,
+        middlewares: list[Middleware] = None,
     ) -> None:
         self._client = NativeAsyncClient(
             total_timeout=self._total_timeout(timeout),
@@ -55,7 +55,7 @@ class AsyncReqwestHTTPTransport(AsyncBaseTransport):
             http2=http2,
             root_certificates_der=ssl_context.get_ca_certs(binary_form=True) if ssl_context else None,
             proxy=self._proxy_config(proxy),
-            tracer=tracer,
+            middlewares=middlewares,
         )
 
     def _proxy_config(self, proxy: Proxy | None) -> NativeProxyConfig | None:
@@ -64,7 +64,7 @@ class AsyncReqwestHTTPTransport(AsyncBaseTransport):
         return NativeProxyConfig(
             url=str(proxy.url),
             basic_auth=proxy.raw_auth,
-            headers=proxy.headers.raw,
+            headers=proxy.headers,
         )
 
     def _total_timeout(self, timeout: Timeout | None) -> timedelta | None:
@@ -95,49 +95,83 @@ class AsyncReqwestHTTPTransport(AsyncBaseTransport):
     ) -> None:
         await self.aclose()
 
-    async def handle_async_request(self, request: Request) -> Response:
-        if isinstance(request.stream, ByteStream):
-            bytes_iter = iter(request.stream)
-            body_bytes = next(bytes_iter)
-            assert next(bytes_iter, None) is None
-        else:
-            assert isinstance(request.stream, AsyncByteStream)
-            bytes_iter = aiter(request.stream)
-            body_bytes = None
+    async def handle_async_request(self, method: str, url: str) -> "Response":
+        # body, stream = None, None
+        # if isinstance(request.stream, ByteStream):
+        #     body = request.stream.content
+        # else:
+        #     assert isinstance(request.stream, AsyncByteStream)
+        #     stream = aiter(request.stream)
 
         with _map_errors():
+            # resp = await self._client.request(
+            #     method=request.method,
+            #     url=str(request.url),
+            #     headers=request.headers,
+            #     body=body,
+            #     stream=stream,
+            #     timeout=None,
+            #     extensions=request.extensions,
+            # )
             resp = await self._client.request(
-                method=request.method,
-                url=str(request.url),
-                headers=request.headers.raw,
-                content=body_bytes if body_bytes is not None else bytes_iter,
+                method=method,
+                url=url,
+                headers={},
+                body=b"",
+                stream=None,
                 timeout=None,
-                extensions=request.extensions,
+                extensions={},
             )
 
-        return Response(
-            status_code=resp.status,
-            headers=resp.headers,
-            stream=AsyncResponseStream(resp),
-            extensions=await resp.get_extensions(),
-        )
+        return Response(resp)
 
     async def aclose(self) -> None:
         await self._client.close()
 
 
-class AsyncResponseStream(AsyncByteStream):
-    def __init__(self, response_stream: AsyncIterable[bytes]) -> None:
-        self._response_stream = response_stream
+class Response:
+    def __init__(
+        self,
+        response,
+    ) -> None:
+        self.status_code = response.head.status_code
+        self.headers = response.head.headers
+        self.chunks = None
+        self.stream = None
+        if isinstance(response.body, list):
+            self.chunks = response.body
+        else:
+            self.stream = AsyncResponseStream(response.body)
+        self.extensions = {}
 
-    async def __aiter__(self) -> AsyncIterator[bytes]:
-        with _map_errors():
-            async for part in self._response_stream:
-                yield part
+    async def read(self) -> memoryview | bytes:
+        if self.chunks is not None:
+            return b"".join([c for c in self.chunks])
+        res = [c async for chunks in self.stream for c in chunks]
+        return b"".join(res)
 
     async def aclose(self) -> None:
-        if hasattr(self._response_stream, "close"):
-            await self._response_stream.close()
+        if self.stream is not None:
+            await self.stream.aclose()
+
+
+class AsyncResponseStream(AsyncByteStream):
+    def __init__(self, response_stream: AsyncIterable[memoryview]) -> None:
+        self.stream = response_stream
+
+    async def __aiter__(self) -> AsyncIterator[list[memoryview]]:
+        with _map_errors():
+            has_more = True
+            while has_more:
+                b, has_more = self.stream.try_next_no_wait()
+                if b is None and has_more:
+                    b, has_more = await self.stream.wait_next()
+                if b is not None:
+                    yield b
+
+    async def aclose(self) -> None:
+        if hasattr(self.stream, "close"):
+            await self.stream.close()
 
 
 @contextmanager
@@ -156,3 +190,11 @@ def _map_errors() -> Generator[None, None, None]:
         raise HttpxReadError(str(e)) from e
     except ReadTimeoutError as e:
         raise HttpxReadTimeout(str(e)) from e
+
+
+def _supports_buffer_protocol(obj):
+    try:
+        memoryview(obj)
+        return True
+    except TypeError:
+        return False

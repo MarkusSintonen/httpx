@@ -52,7 +52,6 @@ __all__ = [
     "DigestAuth",
     "get",
     "head",
-    "Headers",
     "HTTPError",
     "HTTPStatusError",
     "HTTPTransport",

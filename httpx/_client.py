@@ -9,6 +9,8 @@ import warnings
 from contextlib import asynccontextmanager, contextmanager
 from types import TracebackType
 
+from multidict import CIMultiDict
+
 from ._transports.reqwest import AsyncReqwestHTTPTransport
 from .__version__ import __version__
 from ._auth import Auth, BasicAuth, FunctionAuth
@@ -28,16 +30,15 @@ from ._exceptions import (
     TooManyRedirects,
     request_context,
 )
-from ._models import Cookies, Headers, Request, Response
+from ._models import Cookies, Request, Response
 from ._status_codes import codes
 from ._transports.base import AsyncBaseTransport, BaseTransport
-from ._transports.default import AsyncHTTPTransport, HTTPTransport
+from ._transports.default import HTTPTransport
 from ._types import (
     AsyncByteStream,
     AuthTypes,
     CertTypes,
     CookieTypes,
-    HeaderTypes,
     ProxyTypes,
     QueryParamTypes,
     RequestContent,
@@ -45,7 +46,8 @@ from ._types import (
     RequestExtensions,
     RequestFiles,
     SyncByteStream,
-    TimeoutTypes, Tracer,
+    TimeoutTypes,
+    Middleware,
 )
 from ._urls import URL, QueryParams
 from ._utils import URLPattern, get_environment_proxies
@@ -193,7 +195,7 @@ class BaseClient:
         *,
         auth: AuthTypes | None = None,
         params: QueryParamTypes | None = None,
-        headers: HeaderTypes | None = None,
+        headers: CIMultiDict[str] | None = None,
         cookies: CookieTypes | None = None,
         timeout: TimeoutTypes = DEFAULT_TIMEOUT_CONFIG,
         follow_redirects: bool = False,
@@ -209,7 +211,7 @@ class BaseClient:
 
         self._auth = self._build_auth(auth)
         self._params = QueryParams(params)
-        self.headers = Headers(headers)
+        self.headers = headers
         self._cookies = Cookies(cookies)
         self._timeout = Timeout(timeout)
         self.follow_redirects = follow_redirects
@@ -298,23 +300,24 @@ class BaseClient:
         self._base_url = self._enforce_trailing_slash(URL(url))
 
     @property
-    def headers(self) -> Headers:
+    def headers(self) -> CIMultiDict[str]:
         """
         HTTP headers to include when sending requests.
         """
         return self._headers
 
     @headers.setter
-    def headers(self, headers: HeaderTypes) -> None:
-        client_headers = Headers(
+    def headers(self, headers: CIMultiDict[str] | None) -> None:
+        client_headers = CIMultiDict[str](
             {
-                b"Accept": b"*/*",
-                b"Accept-Encoding": ACCEPT_ENCODING.encode("ascii"),
-                b"Connection": b"keep-alive",
-                b"User-Agent": USER_AGENT.encode("ascii"),
+                "Accept": "*/*",
+                "Accept-Encoding": ACCEPT_ENCODING,
+                "Connection": "keep-alive",
+                "User-Agent": USER_AGENT,
             }
         )
-        client_headers.update(headers)
+        if headers:
+            client_headers.update(headers)
         self._headers = client_headers
 
     @property
@@ -349,7 +352,7 @@ class BaseClient:
         files: RequestFiles | None = None,
         json: typing.Any | None = None,
         params: QueryParamTypes | None = None,
-        headers: HeaderTypes | None = None,
+        headers: CIMultiDict[str] | None = None,
         cookies: CookieTypes | None = None,
         timeout: TimeoutTypes | UseClientDefault = USE_CLIENT_DEFAULT,
         extensions: RequestExtensions | None = None,
@@ -423,13 +426,14 @@ class BaseClient:
             return merged_cookies
         return cookies
 
-    def _merge_headers(self, headers: HeaderTypes | None = None) -> HeaderTypes | None:
+    def _merge_headers(self, headers: CIMultiDict[str] | None = None) -> CIMultiDict[str] | None:
         """
         Merge a headers argument together with any headers on the client,
         to create the headers used for the outgoing request.
         """
-        merged_headers = Headers(self.headers)
-        merged_headers.update(headers)
+        merged_headers = self.headers.copy()
+        if headers:
+            merged_headers.update(headers)
         return merged_headers
 
     def _merge_queryparams(
@@ -545,11 +549,11 @@ class BaseClient:
 
         return url
 
-    def _redirect_headers(self, request: Request, url: URL, method: str) -> Headers:
+    def _redirect_headers(self, request: Request, url: URL, method: str) -> CIMultiDict[str]:
         """
         Return the headers that should be used for the redirect request.
         """
-        headers = Headers(request.headers)
+        headers = request.headers.copy()
 
         if not _same_origin(url, request.url):
             if not _is_https_redirect(request.url, url):
@@ -643,7 +647,7 @@ class Client(BaseClient):
         *,
         auth: AuthTypes | None = None,
         params: QueryParamTypes | None = None,
-        headers: HeaderTypes | None = None,
+        headers: CIMultiDict[str] | None = None,
         cookies: CookieTypes | None = None,
         verify: ssl.SSLContext | str | bool = True,
         cert: CertTypes | None = None,
@@ -780,7 +784,7 @@ class Client(BaseClient):
         files: RequestFiles | None = None,
         json: typing.Any | None = None,
         params: QueryParamTypes | None = None,
-        headers: HeaderTypes | None = None,
+        headers: CIMultiDict[str] | None = None,
         cookies: CookieTypes | None = None,
         auth: AuthTypes | UseClientDefault | None = USE_CLIENT_DEFAULT,
         follow_redirects: bool | UseClientDefault = USE_CLIENT_DEFAULT,
@@ -837,7 +841,7 @@ class Client(BaseClient):
         files: RequestFiles | None = None,
         json: typing.Any | None = None,
         params: QueryParamTypes | None = None,
-        headers: HeaderTypes | None = None,
+        headers: CIMultiDict[str] | None = None,
         cookies: CookieTypes | None = None,
         auth: AuthTypes | UseClientDefault | None = USE_CLIENT_DEFAULT,
         follow_redirects: bool | UseClientDefault = USE_CLIENT_DEFAULT,
@@ -1040,7 +1044,7 @@ class Client(BaseClient):
         url: URL | str,
         *,
         params: QueryParamTypes | None = None,
-        headers: HeaderTypes | None = None,
+        headers: CIMultiDict[str] | None = None,
         cookies: CookieTypes | None = None,
         auth: AuthTypes | UseClientDefault | None = USE_CLIENT_DEFAULT,
         follow_redirects: bool | UseClientDefault = USE_CLIENT_DEFAULT,
@@ -1069,7 +1073,7 @@ class Client(BaseClient):
         url: URL | str,
         *,
         params: QueryParamTypes | None = None,
-        headers: HeaderTypes | None = None,
+        headers: CIMultiDict[str] | None = None,
         cookies: CookieTypes | None = None,
         auth: AuthTypes | UseClientDefault = USE_CLIENT_DEFAULT,
         follow_redirects: bool | UseClientDefault = USE_CLIENT_DEFAULT,
@@ -1098,7 +1102,7 @@ class Client(BaseClient):
         url: URL | str,
         *,
         params: QueryParamTypes | None = None,
-        headers: HeaderTypes | None = None,
+        headers: CIMultiDict[str] | None = None,
         cookies: CookieTypes | None = None,
         auth: AuthTypes | UseClientDefault = USE_CLIENT_DEFAULT,
         follow_redirects: bool | UseClientDefault = USE_CLIENT_DEFAULT,
@@ -1131,7 +1135,7 @@ class Client(BaseClient):
         files: RequestFiles | None = None,
         json: typing.Any | None = None,
         params: QueryParamTypes | None = None,
-        headers: HeaderTypes | None = None,
+        headers: CIMultiDict[str] | None = None,
         cookies: CookieTypes | None = None,
         auth: AuthTypes | UseClientDefault = USE_CLIENT_DEFAULT,
         follow_redirects: bool | UseClientDefault = USE_CLIENT_DEFAULT,
@@ -1168,7 +1172,7 @@ class Client(BaseClient):
         files: RequestFiles | None = None,
         json: typing.Any | None = None,
         params: QueryParamTypes | None = None,
-        headers: HeaderTypes | None = None,
+        headers: CIMultiDict[str] | None = None,
         cookies: CookieTypes | None = None,
         auth: AuthTypes | UseClientDefault = USE_CLIENT_DEFAULT,
         follow_redirects: bool | UseClientDefault = USE_CLIENT_DEFAULT,
@@ -1205,7 +1209,7 @@ class Client(BaseClient):
         files: RequestFiles | None = None,
         json: typing.Any | None = None,
         params: QueryParamTypes | None = None,
-        headers: HeaderTypes | None = None,
+        headers: CIMultiDict[str] | None = None,
         cookies: CookieTypes | None = None,
         auth: AuthTypes | UseClientDefault = USE_CLIENT_DEFAULT,
         follow_redirects: bool | UseClientDefault = USE_CLIENT_DEFAULT,
@@ -1238,7 +1242,7 @@ class Client(BaseClient):
         url: URL | str,
         *,
         params: QueryParamTypes | None = None,
-        headers: HeaderTypes | None = None,
+        headers: CIMultiDict[str] | None = None,
         cookies: CookieTypes | None = None,
         auth: AuthTypes | UseClientDefault = USE_CLIENT_DEFAULT,
         follow_redirects: bool | UseClientDefault = USE_CLIENT_DEFAULT,
@@ -1357,7 +1361,7 @@ class AsyncClient(BaseClient):
         *,
         auth: AuthTypes | None = None,
         params: QueryParamTypes | None = None,
-        headers: HeaderTypes | None = None,
+        headers: CIMultiDict[str] | None = None,
         cookies: CookieTypes | None = None,
         verify: ssl.SSLContext | str | bool = True,
         cert: CertTypes | None = None,
@@ -1374,7 +1378,7 @@ class AsyncClient(BaseClient):
         transport: AsyncBaseTransport | None = None,
         trust_env: bool = True,
         default_encoding: str | typing.Callable[[bytes], str] = "utf-8",
-        tracer: Tracer = None,
+        middlewares: list[Middleware] = None,
     ) -> None:
         super().__init__(
             auth=auth,
@@ -1410,7 +1414,7 @@ class AsyncClient(BaseClient):
             http2=http2,
             limits=limits,
             transport=transport,
-            tracer=tracer,
+            middlewares=middlewares,
         )
 
         self._mounts: dict[URLPattern, AsyncBaseTransport | None] = {
@@ -1442,7 +1446,7 @@ class AsyncClient(BaseClient):
         http2: bool = False,
         limits: Limits = DEFAULT_LIMITS,
         transport: AsyncBaseTransport | None = None,
-        tracer: Tracer = None,
+        middlewares: list[Middleware] = None,
     ) -> AsyncBaseTransport:
         if transport is not None:
             return transport
@@ -1453,7 +1457,7 @@ class AsyncClient(BaseClient):
             timeout=self.timeout,
             limits=limits,
             ssl_context=create_ssl_context(verify=verify, cert=cert, trust_env=trust_env),
-            tracer=tracer,
+            middlewares=middlewares,
         )
 
     def _init_proxy_transport(
@@ -1496,7 +1500,7 @@ class AsyncClient(BaseClient):
         files: RequestFiles | None = None,
         json: typing.Any | None = None,
         params: QueryParamTypes | None = None,
-        headers: HeaderTypes | None = None,
+        headers: CIMultiDict[str] | None = None,
         cookies: CookieTypes | None = None,
         auth: AuthTypes | UseClientDefault | None = USE_CLIENT_DEFAULT,
         follow_redirects: bool | UseClientDefault = USE_CLIENT_DEFAULT,
@@ -1554,7 +1558,7 @@ class AsyncClient(BaseClient):
         files: RequestFiles | None = None,
         json: typing.Any | None = None,
         params: QueryParamTypes | None = None,
-        headers: HeaderTypes | None = None,
+        headers: CIMultiDict[str] | None = None,
         cookies: CookieTypes | None = None,
         auth: AuthTypes | UseClientDefault | None = USE_CLIENT_DEFAULT,
         follow_redirects: bool | UseClientDefault = USE_CLIENT_DEFAULT,
@@ -1757,7 +1761,7 @@ class AsyncClient(BaseClient):
         url: URL | str,
         *,
         params: QueryParamTypes | None = None,
-        headers: HeaderTypes | None = None,
+        headers: CIMultiDict[str] | None = None,
         cookies: CookieTypes | None = None,
         auth: AuthTypes | UseClientDefault | None = USE_CLIENT_DEFAULT,
         follow_redirects: bool | UseClientDefault = USE_CLIENT_DEFAULT,
@@ -1786,7 +1790,7 @@ class AsyncClient(BaseClient):
         url: URL | str,
         *,
         params: QueryParamTypes | None = None,
-        headers: HeaderTypes | None = None,
+        headers: CIMultiDict[str] | None = None,
         cookies: CookieTypes | None = None,
         auth: AuthTypes | UseClientDefault = USE_CLIENT_DEFAULT,
         follow_redirects: bool | UseClientDefault = USE_CLIENT_DEFAULT,
@@ -1815,7 +1819,7 @@ class AsyncClient(BaseClient):
         url: URL | str,
         *,
         params: QueryParamTypes | None = None,
-        headers: HeaderTypes | None = None,
+        headers: CIMultiDict[str] | None = None,
         cookies: CookieTypes | None = None,
         auth: AuthTypes | UseClientDefault = USE_CLIENT_DEFAULT,
         follow_redirects: bool | UseClientDefault = USE_CLIENT_DEFAULT,
@@ -1848,7 +1852,7 @@ class AsyncClient(BaseClient):
         files: RequestFiles | None = None,
         json: typing.Any | None = None,
         params: QueryParamTypes | None = None,
-        headers: HeaderTypes | None = None,
+        headers: CIMultiDict[str] | None = None,
         cookies: CookieTypes | None = None,
         auth: AuthTypes | UseClientDefault = USE_CLIENT_DEFAULT,
         follow_redirects: bool | UseClientDefault = USE_CLIENT_DEFAULT,
@@ -1885,7 +1889,7 @@ class AsyncClient(BaseClient):
         files: RequestFiles | None = None,
         json: typing.Any | None = None,
         params: QueryParamTypes | None = None,
-        headers: HeaderTypes | None = None,
+        headers: CIMultiDict[str] | None = None,
         cookies: CookieTypes | None = None,
         auth: AuthTypes | UseClientDefault = USE_CLIENT_DEFAULT,
         follow_redirects: bool | UseClientDefault = USE_CLIENT_DEFAULT,
@@ -1922,7 +1926,7 @@ class AsyncClient(BaseClient):
         files: RequestFiles | None = None,
         json: typing.Any | None = None,
         params: QueryParamTypes | None = None,
-        headers: HeaderTypes | None = None,
+        headers: CIMultiDict[str] | None = None,
         cookies: CookieTypes | None = None,
         auth: AuthTypes | UseClientDefault = USE_CLIENT_DEFAULT,
         follow_redirects: bool | UseClientDefault = USE_CLIENT_DEFAULT,
@@ -1955,7 +1959,7 @@ class AsyncClient(BaseClient):
         url: URL | str,
         *,
         params: QueryParamTypes | None = None,
-        headers: HeaderTypes | None = None,
+        headers: CIMultiDict[str] | None = None,
         cookies: CookieTypes | None = None,
         auth: AuthTypes | UseClientDefault = USE_CLIENT_DEFAULT,
         follow_redirects: bool | UseClientDefault = USE_CLIENT_DEFAULT,

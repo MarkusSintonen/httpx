@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "httpx"
 description = "The next generation HTTP client."
 license = "BSD-3-Clause"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 authors = [
     { name = "Tom Christie", email = "tom@tomchristie.com" },
 ]
@@ -33,6 +33,7 @@ dependencies = [
     "httpcore==1.*",
     "anyio",
     "idna",
+    "multidict",
 ]
 dynamic = ["readme", "version"]
 
@@ -69,7 +70,10 @@ dev = [
     "coverage[toml]==7.6.1",
     "cryptography==44.0.1",
     "chardet==5.2.0",
-
+    "aiohttp==3.12.0",
+    "urllib3==2.4.0",
+    "matplotlib==3.10.3",
+    "pyinstrument==5.0.2"
 ]
 
 [tool.uv]

@@ -41,14 +41,6 @@ QueryParamTypes = Union[
     bytes,
 ]
 
-HeaderTypes = Union[
-    "Headers",
-    Mapping[str, str],
-    Mapping[bytes, bytes],
-    Sequence[Tuple[str, str]],
-    Sequence[Tuple[bytes, bytes]],
-]
-
 CookieTypes = Union["Cookies", CookieJar, Dict[str, str], List[Tuple[str, str]]]
 
 TimeoutTypes = Union[
@@ -114,6 +106,6 @@ class AsyncByteStream:
         pass
 
 
-class Tracer(Protocol):
-    async def on_request_start(self, request_info: Any) -> None: ...  # TODO arg type
-    async def on_request_end(self, response_info: Any) -> None: ...  # TODO arg type
+class Middleware(Protocol):
+    async def on_request_start(self, request: Any) -> None: ...  # TODO arg type
+    async def on_request_end(self, request: Any, response: Any) -> None: ...  # TODO arg type

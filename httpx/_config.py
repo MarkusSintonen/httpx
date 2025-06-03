@@ -3,8 +3,9 @@ from __future__ import annotations
 import os
 import typing
 
-from ._models import Headers
-from ._types import CertTypes, HeaderTypes, TimeoutTypes
+from multidict import CIMultiDict
+
+from ._types import CertTypes, TimeoutTypes
 from ._urls import URL
 
 if typing.TYPE_CHECKING:
@@ -205,10 +206,9 @@ class Proxy:
         *,
         ssl_context: ssl.SSLContext | None = None,
         auth: tuple[str, str] | None = None,
-        headers: HeaderTypes | None = None,
+        headers: CIMultiDict[str] | None = None,
     ) -> None:
         url = URL(url)
-        headers = Headers(headers)
 
         if url.scheme not in ("http", "https", "socks5", "socks5h"):
             raise ValueError(f"Unknown scheme for proxy URL {url!r}")

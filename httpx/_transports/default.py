@@ -174,7 +174,7 @@ class HTTPTransport(BaseTransport):
                     target=proxy.url.raw_path,
                 ),
                 proxy_auth=proxy.raw_auth,
-                proxy_headers=proxy.headers.raw,
+                proxy_headers=[*proxy.headers.items()] if proxy.headers else None,
                 ssl_context=ssl_context,
                 proxy_ssl_context=proxy.ssl_context,
                 max_connections=limits.max_connections,
@@ -242,7 +242,7 @@ class HTTPTransport(BaseTransport):
                 port=request.url.port,
                 target=request.url.raw_path,
             ),
-            headers=request.headers.raw,
+            headers=request.headers,
             content=request.stream,
             extensions=request.extensions,
         )

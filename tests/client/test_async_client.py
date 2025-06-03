@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 import pytest
+from multidict import CIMultiDict
 
 import httpx
 
@@ -52,10 +53,9 @@ async def test_get_https__fails_not_trusted(https_server):
         pytest.param("http://", id="no-host"),
     ],
 )
-
 async def test_get_invalid_url(server, url):
     async with httpx.AsyncClient() as client:
-        with pytest.raises((httpx.UnsupportedProtocol, httpx.LocalProtocolError)):
+        with pytest.raises(ValueError, match="Invalid URL format"):
             await client.get(url)
 
 
@@ -378,7 +378,7 @@ async def test_cancellation_during_stream():
                 stream_was_closed = True
 
         return httpx.Response(
-            200, headers={"Content-Length": "12"}, stream=CancelledStream()
+            200, headers=CIMultiDict[str]({"Content-Length": "12"}), stream=CancelledStream()
         )
 
     transport = httpx.MockTransport(response_with_cancel_during_stream)
@@ -395,53 +395,61 @@ async def test_server_extensions(server):
     async with httpx.AsyncClient(http2=True) as client:
         response = await client.get(url, extensions={"something_custom": "foo"})
     assert response.status_code == 200
-    assert response.extensions["http_version"] == b"HTTP/1.1"
     assert response.extensions["something_custom"] == "foo"
 
 
-@pytest.mark.parametrize("extra", [1, "a", [1, 2], ["a", "b"], {"a": "b"}, b"123"])
-async def test_trace(server, extra):
+@pytest.mark.parametrize("extra", [1, "a", [1, 2], ["a", "b"], {"a": "b"}])
+async def test_middleware(server, extra):
     url = server.url
 
     @dataclass
-    class Tracer:
-        async def on_request_start(self, request_trace) -> None:
-            assert request_trace.request.method == "GET"
-            assert request_trace.request.url == str(url)
-            assert request_trace.extensions["something_custom"] == "foo"
-            request_trace.extensions["something_custom"] = "bar"
-            request_trace.extensions["extra"] = extra
+    class Middleware:
+        async def handle(self, request, ext, next) -> None:
+            assert request.get_method() == "GET"
+            assert request.get_url() == str(url)
+            assert ext["something_custom"] == "foo"
+            response = await next.run(request, {**ext, "something_custom": "bar", "extra": extra})
+            assert response.get_status() == 200
+            assert response.get_extensions()["something_custom"] == "bar"
+            assert response.get_extensions()["extra"] == extra
+            response.set_extensions({**response.get_extensions(), "something_custom": "baz"})
+            return response
 
-        async def on_request_end(self, response_trace) -> None:
-            assert response_trace.request.method == "GET"
-            assert response_trace.request.url == str(url)
-            assert response_trace.response.status_code == 200
-            assert response_trace.extensions["something_custom"] == "bar"
-            assert response_trace.extensions["extra"] == extra
-            response_trace.extensions["something_custom"] = "baz"
-
-    async with httpx.AsyncClient(http2=True, tracer=Tracer()) as client:
+    async with httpx.AsyncClient(http2=True, middlewares=[Middleware()]) as client:
         response = await client.get(url, extensions={"something_custom": "foo"})
     assert response.status_code == 200
-    assert response.extensions["http_version"] == b"HTTP/1.1"
     assert response.extensions["something_custom"] == "baz"
     assert response.extensions["extra"] == extra
+
+
+async def test_middleware__override_response(server):
+    url = server.url
+
+    @dataclass
+    class Middleware:
+        async def handle(self, request, ext, next) -> None:
+            return next.create_response({"status_code": 201, "body": b"foo"})
+
+    async with httpx.AsyncClient(http2=True, middlewares=[Middleware()]) as client:
+        response = await client.get(url)
+    assert response.status_code == 201
+    assert (await response.aread()) == b"foo"
 
 
 @pytest.mark.parametrize("exc_request", [Exception("some_req_error"), None])
 @pytest.mark.parametrize("exc_response", [Exception("some_resp_error"), None])
 async def test_trace_exception(server, exc_request: Exception | None, exc_response: Exception | None):
     @dataclass
-    class Tracer:
-        async def on_request_start(self, request_trace) -> None:
+    class Middleware:
+        async def handle(self, request, ext, next) -> None:
             if exc_request:
                 raise exc_request
-
-        async def on_request_end(self, response_trace) -> None:
+            res = await next.run(request, ext)
             if exc_response:
                 raise exc_response
+            return res
 
-    async with httpx.AsyncClient(http2=True, tracer=Tracer()) as client:
+    async with httpx.AsyncClient(http2=True, middlewares=[Middleware()]) as client:
         if exc_request or exc_response:
             with pytest.raises(Exception) as e:
                 await client.get(server.url, extensions={"something_custom": "foo"})

@@ -3,13 +3,14 @@ from __future__ import annotations
 import typing
 from contextlib import contextmanager
 
+from multidict import CIMultiDict
+
 from ._client import Client
 from ._config import DEFAULT_TIMEOUT_CONFIG
 from ._models import Response
 from ._types import (
     AuthTypes,
     CookieTypes,
-    HeaderTypes,
     ProxyTypes,
     QueryParamTypes,
     RequestContent,
@@ -45,7 +46,7 @@ def request(
     data: RequestData | None = None,
     files: RequestFiles | None = None,
     json: typing.Any | None = None,
-    headers: HeaderTypes | None = None,
+    headers: CIMultiDict[str] | None = None,
     cookies: CookieTypes | None = None,
     auth: AuthTypes | None = None,
     proxy: ProxyTypes | None = None,
@@ -130,7 +131,7 @@ def stream(
     data: RequestData | None = None,
     files: RequestFiles | None = None,
     json: typing.Any | None = None,
-    headers: HeaderTypes | None = None,
+    headers: CIMultiDict[str] | None = None,
     cookies: CookieTypes | None = None,
     auth: AuthTypes | None = None,
     proxy: ProxyTypes | None = None,
@@ -175,7 +176,7 @@ def get(
     url: URL | str,
     *,
     params: QueryParamTypes | None = None,
-    headers: HeaderTypes | None = None,
+    headers: CIMultiDict[str] | None = None,
     cookies: CookieTypes | None = None,
     auth: AuthTypes | None = None,
     proxy: ProxyTypes | None = None,
@@ -211,7 +212,7 @@ def options(
     url: URL | str,
     *,
     params: QueryParamTypes | None = None,
-    headers: HeaderTypes | None = None,
+    headers: CIMultiDict[str] | None = None,
     cookies: CookieTypes | None = None,
     auth: AuthTypes | None = None,
     proxy: ProxyTypes | None = None,
@@ -247,7 +248,7 @@ def head(
     url: URL | str,
     *,
     params: QueryParamTypes | None = None,
-    headers: HeaderTypes | None = None,
+    headers: CIMultiDict[str] | None = None,
     cookies: CookieTypes | None = None,
     auth: AuthTypes | None = None,
     proxy: ProxyTypes | None = None,
@@ -287,7 +288,7 @@ def post(
     files: RequestFiles | None = None,
     json: typing.Any | None = None,
     params: QueryParamTypes | None = None,
-    headers: HeaderTypes | None = None,
+    headers: CIMultiDict[str] | None = None,
     cookies: CookieTypes | None = None,
     auth: AuthTypes | None = None,
     proxy: ProxyTypes | None = None,
@@ -328,7 +329,7 @@ def put(
     files: RequestFiles | None = None,
     json: typing.Any | None = None,
     params: QueryParamTypes | None = None,
-    headers: HeaderTypes | None = None,
+    headers: CIMultiDict[str] | None = None,
     cookies: CookieTypes | None = None,
     auth: AuthTypes | None = None,
     proxy: ProxyTypes | None = None,
@@ -369,7 +370,7 @@ def patch(
     files: RequestFiles | None = None,
     json: typing.Any | None = None,
     params: QueryParamTypes | None = None,
-    headers: HeaderTypes | None = None,
+    headers: CIMultiDict[str] | None = None,
     cookies: CookieTypes | None = None,
     auth: AuthTypes | None = None,
     proxy: ProxyTypes | None = None,
@@ -406,7 +407,7 @@ def delete(
     url: URL | str,
     *,
     params: QueryParamTypes | None = None,
-    headers: HeaderTypes | None = None,
+    headers: CIMultiDict[str] | None = None,
     cookies: CookieTypes | None = None,
     auth: AuthTypes | None = None,
     proxy: ProxyTypes | None = None,

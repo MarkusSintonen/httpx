@@ -1,17 +1,14 @@
-use crate::async_response::NativeAsyncResponse;
-use crate::exceptions::{
-    BadHeaderError, BadUrlError, PoolTimeoutError, SendConnectionError, SendTimeoutError,
-    SendUnknownError,
-};
+use crate::async_response::{BodyResponse, HeadResponse, ResponseExt, StreamResponse};
+use crate::asyncio::{future_to_coro, py_async_gen_to_stream};
+use crate::exceptions::PoolTimeoutError;
+use crate::middleware::MiddlewareAdapter;
 use crate::proxy_config::NativeProxyConfig;
-use crate::trace::TraceMiddleware;
-use crate::utils::{Extensions, parse_method, parse_url};
-use futures_util::stream::StreamExt;
+use crate::runtime::Runtime;
+use crate::utils::{Extensions, HeaderMapExt, MethodExt, UrlExt, copy_extensions, map_send_error};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyBytes;
-use reqwest::header::{HeaderName, HeaderValue};
-use reqwest::{Body, Client};
+use pyo3_bytes::PyBytes;
+use reqwest::Client;
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,6 +21,7 @@ pub struct NativeAsyncClient {
     connect_timeout: Option<Duration>,
     #[pyo3(get)]
     proxy: Option<NativeProxyConfig>,
+    runtime: Arc<Runtime>,
 }
 
 impl Drop for NativeAsyncClient {
@@ -49,18 +47,14 @@ impl NativeAsyncClient {
         http2: bool,
         root_certificates_der: Option<Vec<Vec<u8>>>,
         proxy: Option<NativeProxyConfig>,
-        tracer: Option<Bound<PyAny>>,
+        middlewares: Option<Vec<Bound<PyAny>>>,
     ) -> PyResult<Self> {
         if !http1 && !http2 {
-            return Err(PyValueError::new_err(
-                "At least one of http1 or http2 must be true",
-            ));
+            return Err(PyValueError::new_err("At least one of http1 or http2 must be true"));
         }
         if let Some(max_conns) = max_connections {
             if max_conns == 0 {
-                return Err(PyValueError::new_err(
-                    "max_connections must be greater than 0",
-                ));
+                return Err(PyValueError::new_err("max_connections must be greater than 0"));
             }
         }
 
@@ -88,10 +82,10 @@ impl NativeAsyncClient {
         }
         if let Some(root_certificates_der) = root_certificates_der {
             for cert in root_certificates_der {
-                client =
-                    client.add_root_certificate(reqwest::Certificate::from_der(&cert).map_err(
-                        |e| PyValueError::new_err(format!("Invalid certificate: {}", e)),
-                    )?);
+                client = client.add_root_certificate(
+                    reqwest::Certificate::from_der(&cert)
+                        .map_err(|e| PyValueError::new_err(format!("Invalid certificate: {}", e)))?,
+                );
             }
         }
         if let Some(proxy) = &proxy {
@@ -103,23 +97,29 @@ impl NativeAsyncClient {
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to create HTTP client: {}", e)))?;
         let mut middleware_client = ClientBuilder::new(client);
 
-        middleware_client = middleware_client.with(TraceMiddleware::new(py, tracer)?);
+        if let Some(middlewares) = middlewares {
+            for middleware in middlewares {
+                middleware_client = middleware_client.with(MiddlewareAdapter::new(py, middleware)?);
+            }
+        }
 
         Ok(NativeAsyncClient {
             client: Some(middleware_client.build()),
             request_semaphore: max_connections.map(|limit| Arc::new(Semaphore::new(limit))),
             connect_timeout,
             proxy,
+            runtime: Arc::new(Runtime::start()?),
         })
     }
 
     fn request<'py>(
         &self,
         py: Python<'py>,
-        method: String,
-        url: String,
-        headers: Option<Vec<(Vec<u8>, Vec<u8>)>>,
-        content: Option<Bound<'py, PyAny>>,
+        method: MethodExt,
+        url: UrlExt,
+        headers: Option<HeaderMapExt>,
+        body: Option<Body>,
+        stream: Option<PyObject>,
         timeout: Option<Duration>,
         extensions: Option<Extensions>,
     ) -> PyResult<Bound<'py, PyAny>> {
@@ -128,86 +128,114 @@ impl NativeAsyncClient {
             .clone()
             .ok_or_else(|| PyRuntimeError::new_err("Client is not initialized"))?;
 
-        let method = parse_method(method)?;
-        let url = parse_url(url)?;
-        if url.scheme() != "http" && url.scheme() != "https" {
-            return Err(BadUrlError::new_err(format!(
-                "Invalid URL scheme: {}",
-                url.scheme()
-            )));
-        }
+        let url: reqwest::Url = url.try_into()?;
 
-        let body = content
-            .map(|content| {
-                if content.is_exact_instance_of::<PyBytes>() {
-                    let py_bytes = unsafe { content.downcast_unchecked::<PyBytes>() }.as_bytes();
-                    py.allow_threads(|| Ok(Body::from(py_bytes.to_vec())))
-                } else {
-                    pyo3_async_runtimes::tokio::into_stream_v2(content).map(|py_stream| {
-                        let stream = py_stream
-                            .map(|chunk| Python::with_gil(|py| chunk.extract::<Vec<u8>>(py)));
-                        Body::wrap_stream(stream)
-                    })
-                }
-            })
-            .transpose()?;
+        // let mut body = py.allow_threads(|| match body {
+        //     Some(Body::Str(body)) => Some(reqwest::Body::from(body)),
+        //     Some(Body::Bytes(body)) => Some(reqwest::Body::from(body.0)),
+        //     None => None,
+        // });
+        let mut body = match body {
+            Some(Body::Str(body)) => Some(reqwest::Body::from(body)),
+            Some(Body::Bytes(body)) => Some(reqwest::Body::from(body.into_inner())),
+            None => None,
+        };
+        if let Some(stream) = stream {
+            body = Some(reqwest::Body::wrap_stream(py_async_gen_to_stream(stream)));
+        };
 
         let request_semaphore = self.request_semaphore.clone();
         let connect_timeout = self.connect_timeout.clone();
 
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        // pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        //     let permit = if let Some(request_semaphore) = request_semaphore {
+        //         Some(Self::limit_connections(request_semaphore, connect_timeout).await?)
+        //     } else {
+        //         None
+        //     };
+        //
+        //     let mut req_builder = client.request(method.0, url);
+        //     if let Some(body) = body {
+        //         req_builder = req_builder.body(body);
+        //     }
+        //     if let Some(headers) = headers {
+        //         req_builder = req_builder.headers(headers.0);
+        //     }
+        //     if let Some(timeout) = timeout {
+        //         req_builder = req_builder.timeout(timeout);
+        //     }
+        //     let extensions2 = extensions.clone();
+        //     if let Some(extensions) = extensions {
+        //         req_builder = req_builder.with_extension(extensions);
+        //     }
+        //
+        //     let mut response = req_builder.send().await.map_err(map_send_error)?;
+        //
+        //     if let Some(extensions) = extensions2 {
+        //         copy_extensions(&extensions, response.extensions_mut());
+        //     }
+        //
+        //     NativeAsyncResponse::new(response, permit)
+        // })
+
+        let mut req_builder = client.request(method.0, url);
+        if let Some(body) = body {
+            req_builder = req_builder.body(body);
+        }
+        if let Some(headers) = headers {
+            req_builder = req_builder.headers(headers.0);
+        }
+        if let Some(timeout) = timeout {
+            req_builder = req_builder.timeout(timeout);
+        }
+        let extensions2 = extensions.clone();
+        if let Some(extensions) = extensions {
+            req_builder = req_builder.with_extension(extensions);
+        }
+
+        let runtime = self.runtime.clone();
+
+        future_to_coro(py, &self.runtime, async move {
             let permit = if let Some(request_semaphore) = request_semaphore {
                 Some(Self::limit_connections(request_semaphore, connect_timeout).await?)
             } else {
                 None
             };
 
-            let mut req_builder = client.request(method, url);
-            if let Some(body) = body {
-                req_builder = req_builder.body(body);
-            }
-            if let Some(headers) = headers {
-                for (header_key, header_value) in headers.into_iter() {
-                    let header_name = HeaderName::from_bytes(&header_key)
-                        .map_err(|_| BadHeaderError::new_err("Invalid header key"))?;
-                    let header_value = HeaderValue::from_bytes(&header_value)
-                        .map_err(|_| BadHeaderError::new_err("Invalid header value"))?;
-                    req_builder = req_builder.header(header_name, header_value);
-                }
-            }
-            if let Some(timeout) = timeout {
-                req_builder = req_builder.timeout(timeout);
-            }
-            if let Some(extensions) = extensions {
-                req_builder = req_builder.with_extension(extensions);
+            let mut response = req_builder.send().await.map_err(map_send_error)?;
+
+            if let Some(extensions) = extensions2 {
+                copy_extensions(&extensions, response.extensions_mut());
             }
 
-            let response = req_builder.send().await.map_err(Self::map_send_error)?;
+            let head = HeadResponse::from(&response);
+            let mut response = ResponseExt::new(response, permit);
+            let (body, has_more) = response.read_limit().await?;
 
-            NativeAsyncResponse::new(response, permit)
+            if has_more {
+                response.set_init_chunks(body);
+                StreamResponse::new_py(response, head, runtime)
+            } else {
+                BodyResponse::new_py(head, body) // All was read
+            }
         })
     }
 
-    fn close<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    async fn close(
+        &mut self,
+        // py: Python<'py>,
+    ) -> PyResult<()> {
         let mut client = self.client.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            client.take(); // Drop the client
-            Ok(())
-        })
+        // pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        //     client.take(); // Drop the client
+        //     Ok(())
+        // })
+        client.take(); // Drop the client
+        Ok(())
     }
 }
 
 impl NativeAsyncClient {
-    fn map_send_error(error: reqwest_middleware::Error) -> PyErr {
-        if error.is_connect() {
-            SendConnectionError::new_err(format!("Connection error on send: {}", error))
-        } else if error.is_timeout() {
-            SendTimeoutError::new_err(format!("Timeout on send: {}", error))
-        } else {
-            SendUnknownError::new_err(format!("Unknown failure on send: {}", error))
-        }
-    }
-
     async fn limit_connections(
         request_semaphore: Arc<Semaphore>,
         connect_timeout: Option<Duration>,
@@ -221,4 +249,10 @@ impl NativeAsyncClient {
         };
         permit.map_err(|e| PyRuntimeError::new_err(format!("Failed to acquire semaphore: {}", e)))
     }
+}
+
+#[derive(FromPyObject, IntoPyObject)]
+pub enum Body {
+    Str(String),
+    Bytes(PyBytes),
 }

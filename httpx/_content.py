@@ -29,14 +29,14 @@ __all__ = ["ByteStream"]
 
 
 class ByteStream(AsyncByteStream, SyncByteStream):
-    def __init__(self, stream: bytes) -> None:
-        self._stream = stream
+    def __init__(self, content: bytes) -> None:
+        self.content = content
 
     def __iter__(self) -> Iterator[bytes]:
-        yield self._stream
+        yield self.content
 
     async def __aiter__(self) -> AsyncIterator[bytes]:
-        yield self._stream
+        yield self.content
 
 
 class IteratorByteStream(SyncByteStream):
