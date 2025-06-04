@@ -126,7 +126,7 @@ class AsyncReqwestHTTPTransport(AsyncBaseTransport):
         return Response(resp)
 
     async def aclose(self) -> None:
-        await self._client.close()
+        self._client.close()
 
 
 class Response:
@@ -134,20 +134,13 @@ class Response:
         self,
         response,
     ) -> None:
-        self.status_code = response.head.status_code
-        self.headers = response.head.headers
-        self.chunks = None
-        self.stream = None
-        if isinstance(response.body, list):
-            self.chunks = response.body
-        else:
-            self.stream = AsyncResponseStream(response.body)
+        self.status_code = response.status_code
+        self.headers = response.headers
+        self.stream = AsyncResponseStream(response)
         self.extensions = {}
 
     async def read(self) -> memoryview | bytes:
-        if self.chunks is not None:
-            return b"".join([c for c in self.chunks])
-        res = [c async for chunks in self.stream for c in chunks]
+        res = [c async for c in self.stream]
         return b"".join(res)
 
     async def aclose(self) -> None:
@@ -156,22 +149,23 @@ class Response:
 
 
 class AsyncResponseStream(AsyncByteStream):
-    def __init__(self, response_stream: AsyncIterable[memoryview]) -> None:
-        self.stream = response_stream
+    def __init__(self, response) -> None:
+        self.response = response
 
-    async def __aiter__(self) -> AsyncIterator[list[memoryview]]:
-        with _map_errors():
-            has_more = True
-            while has_more:
-                b, has_more = self.stream.try_next_no_wait()
-                if b is None and has_more:
-                    b, has_more = await self.stream.wait_next()
-                if b is not None:
+    async def __aiter__(self) -> AsyncIterator[memoryview]:
+        try:
+            with _map_errors():
+                while True:
+                    b = await self.response.next_chunk()
+                    if len(b) == 0:
+                        break
                     yield b
+        except Exception:
+            await self.aclose()
+            raise
 
     async def aclose(self) -> None:
-        if hasattr(self.stream, "close"):
-            await self.stream.close()
+        self.response.close()
 
 
 @contextmanager

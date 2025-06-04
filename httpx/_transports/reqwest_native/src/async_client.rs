@@ -1,5 +1,5 @@
-use crate::async_response::{BodyResponse, HeadResponse, ResponseExt, StreamResponse};
-use crate::asyncio::{future_to_coro, py_async_gen_to_stream};
+use crate::async_response::Response;
+use crate::asyncio::{py_async_gen_to_stream};
 use crate::exceptions::PoolTimeoutError;
 use crate::middleware::MiddlewareAdapter;
 use crate::proxy_config::NativeProxyConfig;
@@ -21,7 +21,7 @@ pub struct NativeAsyncClient {
     connect_timeout: Option<Duration>,
     #[pyo3(get)]
     proxy: Option<NativeProxyConfig>,
-    runtime: Arc<Runtime>,
+    runtime: Runtime,
 }
 
 impl Drop for NativeAsyncClient {
@@ -108,13 +108,12 @@ impl NativeAsyncClient {
             request_semaphore: max_connections.map(|limit| Arc::new(Semaphore::new(limit))),
             connect_timeout,
             proxy,
-            runtime: Arc::new(Runtime::start()?),
+            runtime: Runtime::start()?,
         })
     }
 
-    fn request<'py>(
+    async fn request(
         &self,
-        py: Python<'py>,
         method: MethodExt,
         url: UrlExt,
         headers: Option<HeaderMapExt>,
@@ -122,7 +121,7 @@ impl NativeAsyncClient {
         stream: Option<PyObject>,
         timeout: Option<Duration>,
         extensions: Option<Extensions>,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    ) -> PyResult<Py<Response>> {
         let client = self
             .client
             .clone()
@@ -130,11 +129,6 @@ impl NativeAsyncClient {
 
         let url: reqwest::Url = url.try_into()?;
 
-        // let mut body = py.allow_threads(|| match body {
-        //     Some(Body::Str(body)) => Some(reqwest::Body::from(body)),
-        //     Some(Body::Bytes(body)) => Some(reqwest::Body::from(body.0)),
-        //     None => None,
-        // });
         let mut body = match body {
             Some(Body::Str(body)) => Some(reqwest::Body::from(body)),
             Some(Body::Bytes(body)) => Some(reqwest::Body::from(body.into_inner())),
@@ -146,37 +140,6 @@ impl NativeAsyncClient {
 
         let request_semaphore = self.request_semaphore.clone();
         let connect_timeout = self.connect_timeout.clone();
-
-        // pyo3_async_runtimes::tokio::future_into_py(py, async move {
-        //     let permit = if let Some(request_semaphore) = request_semaphore {
-        //         Some(Self::limit_connections(request_semaphore, connect_timeout).await?)
-        //     } else {
-        //         None
-        //     };
-        //
-        //     let mut req_builder = client.request(method.0, url);
-        //     if let Some(body) = body {
-        //         req_builder = req_builder.body(body);
-        //     }
-        //     if let Some(headers) = headers {
-        //         req_builder = req_builder.headers(headers.0);
-        //     }
-        //     if let Some(timeout) = timeout {
-        //         req_builder = req_builder.timeout(timeout);
-        //     }
-        //     let extensions2 = extensions.clone();
-        //     if let Some(extensions) = extensions {
-        //         req_builder = req_builder.with_extension(extensions);
-        //     }
-        //
-        //     let mut response = req_builder.send().await.map_err(map_send_error)?;
-        //
-        //     if let Some(extensions) = extensions2 {
-        //         copy_extensions(&extensions, response.extensions_mut());
-        //     }
-        //
-        //     NativeAsyncResponse::new(response, permit)
-        // })
 
         let mut req_builder = client.request(method.0, url);
         if let Some(body) = body {
@@ -193,45 +156,28 @@ impl NativeAsyncClient {
             req_builder = req_builder.with_extension(extensions);
         }
 
-        let runtime = self.runtime.clone();
+        self.runtime
+            .spawn(async move {
+                let permit = if let Some(request_semaphore) = request_semaphore {
+                    Some(Self::limit_connections(request_semaphore, connect_timeout).await?)
+                } else {
+                    None
+                };
 
-        future_to_coro(py, &self.runtime, async move {
-            let permit = if let Some(request_semaphore) = request_semaphore {
-                Some(Self::limit_connections(request_semaphore, connect_timeout).await?)
-            } else {
-                None
-            };
+                let mut response = req_builder.send().await.map_err(map_send_error)?;
 
-            let mut response = req_builder.send().await.map_err(map_send_error)?;
+                if let Some(extensions) = extensions2 {
+                    copy_extensions(&extensions, response.extensions_mut());
+                }
 
-            if let Some(extensions) = extensions2 {
-                copy_extensions(&extensions, response.extensions_mut());
-            }
-
-            let head = HeadResponse::from(&response);
-            let mut response = ResponseExt::new(response, permit);
-            let (body, has_more) = response.read_limit().await?;
-
-            if has_more {
-                response.set_init_chunks(body);
-                StreamResponse::new_py(response, head, runtime)
-            } else {
-                BodyResponse::new_py(head, body) // All was read
-            }
-        })
+                Response::initialize(response, permit).await
+            })?
+            .await
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to execute request: {}", e)))?
     }
 
-    async fn close(
-        &mut self,
-        // py: Python<'py>,
-    ) -> PyResult<()> {
-        let mut client = self.client.clone();
-        // pyo3_async_runtimes::tokio::future_into_py(py, async move {
-        //     client.take(); // Drop the client
-        //     Ok(())
-        // })
-        client.take(); // Drop the client
-        Ok(())
+    fn close(&mut self) {
+        self.client.take().map(drop);
     }
 }
 
