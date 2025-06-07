@@ -3,21 +3,22 @@ use pyo3::exceptions::PyRuntimeError;
 
 pub struct Runtime {
     inner: Option<tokio::runtime::Handle>,
-    close_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    close_tx: Option<tokio::sync::mpsc::Sender<()>>,
 }
 impl Runtime {
     pub fn start() -> PyResult<Self> {
         let (handle_tx, handle_rx) = std::sync::mpsc::channel::<PyResult<tokio::runtime::Handle>>();
-        let (close_tx, close_rx) = tokio::sync::oneshot::channel::<()>();
+        let (close_tx, mut close_rx) = tokio::sync::mpsc::channel::<()>(1);
 
         std::thread::spawn(move || {
-            let res = tokio::runtime::Builder::new_current_thread().enable_all().build();
-            match res {
+            let rt_res = tokio::runtime::Builder::new_current_thread().enable_all().build();
+            match rt_res {
                 Ok(rt) => {
                     rt.block_on(async {
                         handle_tx.send(Ok(tokio::runtime::Handle::current())).unwrap();
                     });
-                    let _ = rt.block_on(close_rx);
+                    let _ = rt.block_on(close_rx.recv());
+                    rt.shutdown_background();
                 }
                 Err(e) => handle_tx
                     .send(Err(PyRuntimeError::new_err(format!("Failed to create tokio runtime: {}", e))))
@@ -40,18 +41,26 @@ impl Runtime {
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
-        let inner = self
-            .inner
+        Ok(self.runtime()?.spawn(future))
+    }
+
+    fn runtime(&self) -> PyResult<&tokio::runtime::Handle> {
+        self.inner
             .as_ref()
-            .ok_or_else(|| PyRuntimeError::new_err("Runtime has been dropped"))?;
-        Ok(inner.spawn(future))
+            .ok_or_else(|| PyRuntimeError::new_err("Runtime has been dropped"))
+    }
+
+    pub fn close(&self) {
+        if let Some(close_tx) = self.close_tx.as_ref() {
+            let _ = close_tx.try_send(());
+        }
     }
 }
 impl Drop for Runtime {
     fn drop(&mut self) {
-        let _ = self.inner.take();
         if let Some(close_tx) = self.close_tx.take() {
-            let _ = close_tx.send(());
+            let _ = close_tx.try_send(());
         }
+        self.inner.take().map(drop);
     }
 }

@@ -2,7 +2,6 @@ use crate::utils::{Extensions, HeaderMapExt, StatusCodeExt, VersionExt, map_read
 use pyo3::prelude::*;
 use pyo3_bytes::PyBytes;
 use std::collections::VecDeque;
-use bytes::Bytes;
 use tokio::sync::OwnedSemaphorePermit;
 
 #[pyclass]
@@ -23,22 +22,22 @@ pub struct Response {
 
 #[pymethods]
 impl Response {
-    async fn next_chunk<'py>(&mut self) -> PyResult<PyBytes> {
+    async fn next_chunk<'py>(&mut self) -> PyResult<Option<PyBytes>> {
         if let Some(chunk) = self.init_chunks.pop_front() {
-            return Ok(chunk);
+            return Ok(Some(chunk));
         }
 
         if let Some(inner) = self.inner.as_mut() {
-            Ok(PyBytes::new(inner.chunk().await.map_err(map_read_error)?.unwrap_or_else(Bytes::new)))
+            Ok(inner.chunk().await.map_err(map_read_error)?.map(PyBytes::new))
         } else {
             self.close();
-            Ok(PyBytes::new(Bytes::new()))
+            Ok(None)
         }
     }
 
-    fn close<'py>(&mut self) {
-        let _ = self.request_semaphore_permit.take();
-        let _ = self.inner.take();
+    fn close(&mut self) {
+        self.request_semaphore_permit.take().map(drop);
+        self.inner.take().map(drop);
     }
 }
 impl Response {
@@ -51,34 +50,15 @@ impl Response {
         let http_version = VersionExt::from(response.version());
         let extensions = Extensions::from(response.extensions());
 
-        let byte_limit = 65536;
-        let mut init_chunks: VecDeque<PyBytes> = VecDeque::new();
-        let mut has_more = true;
-
-        {
-            let mut tot_bytes = 0;
-            loop {
-                if let Some(chunk) = response.chunk().await.map_err(map_read_error)? {
-                    if !chunk.is_empty() {
-                        tot_bytes += chunk.len();
-                        init_chunks.push_back(PyBytes::new(chunk));
-                    }
-                } else {
-                    has_more = false;
-                    break;
-                }
-                if tot_bytes >= byte_limit {
-                    break;
-                }
-            }
-        }
+        let init_byte_limit = 65536;
+        let (init_chunks, has_more) = Self::read_limit(&mut response, init_byte_limit).await?;
 
         let (resp, request_permit) = if has_more {
             (Some(response), request_semaphore_permit)
         } else {
             // Release the semaphore right away and drop the response
             // without waiting for user to do it (by consuming or closing).
-            request_semaphore_permit.take();
+            request_semaphore_permit.take().map(drop);
             drop(response);
             (None, None)
         };
@@ -95,5 +75,27 @@ impl Response {
             };
             Py::new(py, response)
         })
+    }
+
+    async fn read_limit(response: &mut reqwest::Response, byte_limit: usize) -> PyResult<(VecDeque<PyBytes>, bool)> {
+        let mut init_chunks: VecDeque<PyBytes> = VecDeque::new();
+        let mut has_more = true;
+        let mut tot_bytes = 0;
+        while has_more && (tot_bytes < byte_limit) {
+            if let Some(chunk) = response.chunk().await.map_err(map_read_error)? {
+                if !chunk.is_empty() {
+                    tot_bytes += chunk.len();
+                    init_chunks.push_back(PyBytes::new(chunk));
+                }
+            } else {
+                has_more = false;
+            }
+        }
+        Ok((init_chunks, has_more))
+    }
+}
+impl Drop for Response {
+    fn drop(&mut self) {
+        self.close()
     }
 }

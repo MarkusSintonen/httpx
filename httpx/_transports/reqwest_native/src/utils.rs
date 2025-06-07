@@ -223,3 +223,9 @@ pub fn map_read_error(error: reqwest::Error) -> PyErr {
         ReadUnknownError::new_err(format!("Unknown failure on read: {}", error))
     }
 }
+
+#[derive(FromPyObject, IntoPyObject)]
+pub enum Body {
+    Str(String),
+    Bytes(pyo3_bytes::PyBytes),
+}

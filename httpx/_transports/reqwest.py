@@ -155,11 +155,8 @@ class AsyncResponseStream(AsyncByteStream):
     async def __aiter__(self) -> AsyncIterator[memoryview]:
         try:
             with _map_errors():
-                while True:
-                    b = await self.response.next_chunk()
-                    if len(b) == 0:
-                        break
-                    yield b
+                while (chunk := await self.response.next_chunk()) is not None:
+                    yield chunk
         except Exception:
             await self.aclose()
             raise

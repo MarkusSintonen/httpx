@@ -1,13 +1,13 @@
 use crate::async_response::Response;
-use crate::asyncio::{py_async_gen_to_stream};
+use crate::asyncio::py_async_gen_to_stream;
 use crate::exceptions::PoolTimeoutError;
 use crate::middleware::MiddlewareAdapter;
 use crate::proxy_config::NativeProxyConfig;
 use crate::runtime::Runtime;
-use crate::utils::{Extensions, HeaderMapExt, MethodExt, UrlExt, copy_extensions, map_send_error};
+use crate::utils::{Extensions, HeaderMapExt, MethodExt, UrlExt, copy_extensions, map_send_error, Body};
+use pyo3::coroutine::CancelHandle;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3_bytes::PyBytes;
 use reqwest::Client;
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use std::sync::Arc;
@@ -17,19 +17,12 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 #[pyclass]
 pub struct NativeAsyncClient {
     client: Option<ClientWithMiddleware>,
+    runtime: Runtime,
     request_semaphore: Option<Arc<Semaphore>>,
+    #[pyo3(get)]
     connect_timeout: Option<Duration>,
     #[pyo3(get)]
     proxy: Option<NativeProxyConfig>,
-    runtime: Runtime,
-}
-
-impl Drop for NativeAsyncClient {
-    fn drop(&mut self) {
-        if let Some(client) = self.client.take() {
-            drop(client); // Explicitly drop the client
-        }
-    }
 }
 
 #[pymethods]
@@ -105,10 +98,10 @@ impl NativeAsyncClient {
 
         Ok(NativeAsyncClient {
             client: Some(middleware_client.build()),
+            runtime: Runtime::start()?,
             request_semaphore: max_connections.map(|limit| Arc::new(Semaphore::new(limit))),
             connect_timeout,
             proxy,
-            runtime: Runtime::start()?,
         })
     }
 
@@ -121,63 +114,71 @@ impl NativeAsyncClient {
         stream: Option<PyObject>,
         timeout: Option<Duration>,
         extensions: Option<Extensions>,
+        #[pyo3(cancel_handle)] mut cancel: CancelHandle,
     ) -> PyResult<Py<Response>> {
         let client = self
             .client
             .clone()
             .ok_or_else(|| PyRuntimeError::new_err("Client is not initialized"))?;
 
-        let url: reqwest::Url = url.try_into()?;
-
-        let mut body = match body {
-            Some(Body::Str(body)) => Some(reqwest::Body::from(body)),
-            Some(Body::Bytes(body)) => Some(reqwest::Body::from(body.into_inner())),
-            None => None,
-        };
-        if let Some(stream) = stream {
-            body = Some(reqwest::Body::wrap_stream(py_async_gen_to_stream(stream)));
-        };
-
         let request_semaphore = self.request_semaphore.clone();
         let connect_timeout = self.connect_timeout.clone();
+        
+        let join_handle = self.runtime.spawn(async move {
+            let url: reqwest::Url = url.try_into()?;
 
-        let mut req_builder = client.request(method.0, url);
-        if let Some(body) = body {
-            req_builder = req_builder.body(body);
-        }
-        if let Some(headers) = headers {
-            req_builder = req_builder.headers(headers.0);
-        }
-        if let Some(timeout) = timeout {
-            req_builder = req_builder.timeout(timeout);
-        }
-        let extensions2 = extensions.clone();
-        if let Some(extensions) = extensions {
-            req_builder = req_builder.with_extension(extensions);
-        }
+            let mut body = match body {
+                Some(Body::Str(body)) => Some(reqwest::Body::from(body)),
+                Some(Body::Bytes(body)) => Some(reqwest::Body::from(body.into_inner())),
+                None => None,
+            };
+            if let Some(stream) = stream {
+                body = Some(reqwest::Body::wrap_stream(py_async_gen_to_stream(stream)));
+            };
 
-        self.runtime
-            .spawn(async move {
-                let permit = if let Some(request_semaphore) = request_semaphore {
-                    Some(Self::limit_connections(request_semaphore, connect_timeout).await?)
-                } else {
-                    None
-                };
+            let mut req_builder = client.request(method.0, url);
+            if let Some(body) = body {
+                req_builder = req_builder.body(body);
+            }
+            if let Some(headers) = headers {
+                req_builder = req_builder.headers(headers.0);
+            }
+            if let Some(timeout) = timeout {
+                req_builder = req_builder.timeout(timeout);
+            }
+            let extensions2 = extensions.clone();
+            if let Some(extensions) = extensions {
+                req_builder = req_builder.with_extension(extensions);
+            }
 
-                let mut response = req_builder.send().await.map_err(map_send_error)?;
+            let permit = if let Some(request_semaphore) = request_semaphore {
+                Some(Self::limit_connections(request_semaphore, connect_timeout).await?)
+            } else {
+                None
+            };
 
-                if let Some(extensions) = extensions2 {
-                    copy_extensions(&extensions, response.extensions_mut());
+            let mut response = req_builder.send().await.map_err(map_send_error)?;
+
+            if let Some(extensions) = extensions2 {
+                copy_extensions(&extensions, response.extensions_mut());
+            }
+
+            Response::initialize(response, permit).await
+        })?;
+
+        tokio::select! {
+            res = join_handle => {
+                match res {
+                    Ok(res) => res,
+                    Err(e) => Err(PyRuntimeError::new_err(format!("Client was closed: {}", e))),
                 }
-
-                Response::initialize(response, permit).await
-            })?
-            .await
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to execute request: {}", e)))?
+            },
+            _ = cancel.cancelled() => Err(PyRuntimeError::new_err("Request was cancelled")),
+        }
     }
 
-    fn close(&mut self) {
-        self.client.take().map(drop);
+    fn close(&self) {
+        self.runtime.close();
     }
 }
 
@@ -195,10 +196,4 @@ impl NativeAsyncClient {
         };
         permit.map_err(|e| PyRuntimeError::new_err(format!("Failed to acquire semaphore: {}", e)))
     }
-}
-
-#[derive(FromPyObject, IntoPyObject)]
-pub enum Body {
-    Str(String),
-    Bytes(PyBytes),
 }
