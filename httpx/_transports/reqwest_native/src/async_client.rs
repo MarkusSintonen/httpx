@@ -1,10 +1,10 @@
 use crate::async_response::Response;
 use crate::asyncio::py_async_gen_to_stream;
 use crate::exceptions::PoolTimeoutError;
-use crate::middleware::MiddlewareAdapter;
+use crate::middleware::Middleware;
 use crate::proxy_config::NativeProxyConfig;
 use crate::runtime::Runtime;
-use crate::utils::{Extensions, HeaderMapExt, MethodExt, UrlExt, copy_extensions, map_send_error, Body};
+use crate::utils::{Body, Extensions, HeaderMapExt, MethodExt, UrlExt, copy_extensions, map_send_error};
 use pyo3::coroutine::CancelHandle;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -17,7 +17,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 #[pyclass]
 pub struct NativeAsyncClient {
     client: Option<ClientWithMiddleware>,
-    runtime: Runtime,
+    runtime: Arc<Runtime>,
     request_semaphore: Option<Arc<Semaphore>>,
     #[pyo3(get)]
     connect_timeout: Option<Duration>,
@@ -28,6 +28,20 @@ pub struct NativeAsyncClient {
 #[pymethods]
 impl NativeAsyncClient {
     #[new]
+    #[pyo3(signature = (
+        *,
+        total_timeout=None,
+        connect_timeout=None,
+        read_timeout=None,
+        pool_idle_timeout=None,
+        pool_max_idle_per_host=None,
+        max_connections=None,
+        http1=true,
+        http2=true,
+        root_certificates_der=None,
+        proxy=None,
+        middlewares=None
+    ))]
     fn py_new(
         py: Python,
         total_timeout: Option<Duration>,
@@ -89,22 +103,24 @@ impl NativeAsyncClient {
             .build()
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to create HTTP client: {}", e)))?;
         let mut middleware_client = ClientBuilder::new(client);
+        let runtime = Arc::new(Runtime::start()?);
 
         if let Some(middlewares) = middlewares {
             for middleware in middlewares {
-                middleware_client = middleware_client.with(MiddlewareAdapter::new(py, middleware)?);
+                middleware_client = middleware_client.with(Middleware::new(py, middleware, runtime.clone())?);
             }
         }
 
         Ok(NativeAsyncClient {
             client: Some(middleware_client.build()),
-            runtime: Runtime::start()?,
             request_semaphore: max_connections.map(|limit| Arc::new(Semaphore::new(limit))),
+            runtime,
             connect_timeout,
             proxy,
         })
     }
 
+    #[pyo3(signature = (*, method, url, headers=None, body=None, stream=None, timeout=None, extensions=None))]
     async fn request(
         &self,
         method: MethodExt,
@@ -123,43 +139,22 @@ impl NativeAsyncClient {
 
         let request_semaphore = self.request_semaphore.clone();
         let connect_timeout = self.connect_timeout.clone();
-        
+
         let join_handle = self.runtime.spawn(async move {
-            let url: reqwest::Url = url.try_into()?;
-
-            let mut body = match body {
-                Some(Body::Str(body)) => Some(reqwest::Body::from(body)),
-                Some(Body::Bytes(body)) => Some(reqwest::Body::from(body.into_inner())),
-                None => None,
-            };
-            if let Some(stream) = stream {
-                body = Some(reqwest::Body::wrap_stream(py_async_gen_to_stream(stream)));
-            };
-
-            let mut req_builder = client.request(method.0, url);
-            if let Some(body) = body {
-                req_builder = req_builder.body(body);
-            }
-            if let Some(headers) = headers {
-                req_builder = req_builder.headers(headers.0);
-            }
-            if let Some(timeout) = timeout {
-                req_builder = req_builder.timeout(timeout);
-            }
-            let extensions2 = extensions.clone();
-            if let Some(extensions) = extensions {
-                req_builder = req_builder.with_extension(extensions);
-            }
-
             let permit = if let Some(request_semaphore) = request_semaphore {
                 Some(Self::limit_connections(request_semaphore, connect_timeout).await?)
             } else {
                 None
             };
 
-            let mut response = req_builder.send().await.map_err(map_send_error)?;
+            let extensions_copy = extensions.clone();
 
-            if let Some(extensions) = extensions2 {
+            let mut response = Self::request_builder(client, method, url, headers, body, stream, timeout, extensions)?
+                .send()
+                .await
+                .map_err(map_send_error)?;
+
+            if let Some(extensions) = extensions_copy {
                 copy_extensions(&extensions, response.extensions_mut());
             }
 
@@ -183,6 +178,46 @@ impl NativeAsyncClient {
 }
 
 impl NativeAsyncClient {
+    fn request_builder(
+        client: ClientWithMiddleware,
+        method: MethodExt,
+        url: UrlExt,
+        headers: Option<HeaderMapExt>,
+        body: Option<Body>,
+        stream: Option<PyObject>,
+        timeout: Option<Duration>,
+        extensions: Option<Extensions>,
+    ) -> PyResult<reqwest_middleware::RequestBuilder> {
+        let url: reqwest::Url = url.try_into()?;
+
+        if body.is_some() && stream.is_some() {
+            return Err(PyValueError::new_err("Cannot set both body and stream"));
+        }
+        let body = match body {
+            Some(Body::Str(body)) => Some(reqwest::Body::from(body)),
+            Some(Body::Bytes(body)) => Some(reqwest::Body::from(body.into_inner())),
+            None => match stream {
+                Some(stream) => Some(reqwest::Body::wrap_stream(py_async_gen_to_stream(stream))),
+                None => None,
+            },
+        };
+
+        let mut req_builder = client.request(method.0, url);
+        if let Some(body) = body {
+            req_builder = req_builder.body(body);
+        }
+        if let Some(headers) = headers {
+            req_builder = req_builder.headers(headers.0);
+        }
+        if let Some(timeout) = timeout {
+            req_builder = req_builder.timeout(timeout);
+        }
+        if let Some(extensions) = extensions {
+            req_builder = req_builder.with_extension(extensions);
+        }
+        Ok(req_builder)
+    }
+
     async fn limit_connections(
         request_semaphore: Arc<Semaphore>,
         connect_timeout: Option<Duration>,

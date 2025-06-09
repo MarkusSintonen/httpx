@@ -1,36 +1,35 @@
 use async_stream::try_stream;
 use futures_util::TryStream;
-use pyo3::exceptions::{PyRuntimeError, PyStopAsyncIteration};
+use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::sync::GILOnceCell;
+use pyo3::types::PyNone;
 use pyo3::{Bound, Py, PyAny, PyResult, Python, pyclass, pymethods};
 use pyo3_bytes::PyBytes;
-use tokio::sync::oneshot::Receiver;
 
-fn get_event_loop(py: Python) -> PyResult<Bound<PyAny>> {
-    static ONCE: GILOnceCell<Py<PyAny>> = GILOnceCell::new();
-    ONCE.import(py, "asyncio", "get_event_loop")?.call0()
-}
+pub fn py_coro_to_future(py_coro: Py<PyAny>) -> PyResult<impl Future<Output = PyResult<Py<PyAny>>>> {
+    static EV_LOOP_ONCE: GILOnceCell<Py<PyAny>> = GILOnceCell::new();
 
-fn anext(py: Python, async_gen: Py<PyAny>) -> PyResult<Receiver<PyResult<PyObject>>> {
-    static ONCE: GILOnceCell<Py<PyAny>> = GILOnceCell::new();
-    let coro = ONCE.import(py, "builtins", "anext")?.call((async_gen,), None)?;
-    py_coro_to_future(coro)
-}
-
-pub fn py_coro_to_future(py_coro: Bound<'_, PyAny>) -> PyResult<Receiver<PyResult<PyObject>>> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     let cb = FutCompletor { tx: Some(tx) };
+
     Python::with_gil(|py| {
-        let py_task = get_event_loop(py)?.call_method1("create_task", (py_coro,))?;
+        let ev_loop = EV_LOOP_ONCE.import(py, "asyncio", "get_event_loop")?.call0()?;
+        let py_task = ev_loop.call_method1("create_task", (py_coro,))?;
         py_task.call_method1("add_done_callback", (cb,)).map(|_| ())
     })?;
-    Ok(rx)
+
+    Ok(async move {
+        match rx.await {
+            Ok(result) => result,
+            Err(e) => Err(PyRuntimeError::new_err(format!("Failed to receive task result: {}", e))),
+        }
+    })
 }
 
 #[pyclass]
 struct FutCompletor {
-    tx: Option<tokio::sync::oneshot::Sender<PyResult<PyObject>>>,
+    tx: Option<tokio::sync::oneshot::Sender<PyResult<Py<PyAny>>>>,
 }
 #[pymethods]
 impl FutCompletor {
@@ -42,7 +41,7 @@ impl FutCompletor {
             .map_err(|_| PyRuntimeError::new_err("Failed to send task result"))
     }
 
-    fn task_result(&self, task: Bound<PyAny>) -> PyResult<PyObject> {
+    fn task_result(&self, task: Bound<PyAny>) -> PyResult<Py<PyAny>> {
         match task.call_method0("exception") {
             Ok(task_exc) => {
                 if task_exc.is_none() {
@@ -57,20 +56,24 @@ impl FutCompletor {
 }
 
 pub fn py_async_gen_to_stream(async_gen: Py<PyAny>) -> impl TryStream<Ok = PyBytes, Error = PyErr> + 'static {
+    static ONCE_ANEXT: GILOnceCell<Py<PyAny>> = GILOnceCell::new();
+
     try_stream! {
         loop {
-            let fut = Python::with_gil(|py| anext(py, async_gen.clone_ref(py)))?;
-            let res = fut.await.map_err(|e| PyRuntimeError::new_err(format!("receive error: {}", e)))?;
-            if let Err(e) = &res {
-                let stop = Python::with_gil(|py| {
-                    e.is_instance_of::<PyStopAsyncIteration>(py)
-                });
-                if stop {
-                    break;
-                }
-            }
-            let res = res?;
-            yield Python::with_gil(|py| res.extract::<PyBytes>(py))?;
+            let fut = Python::with_gil(|py| {
+                let async_gen = async_gen.clone_ref(py);
+                let anext = ONCE_ANEXT.import(py, "builtins", "anext")?;
+                let coro = anext.call((async_gen, PyNone::get(py)), None)?;
+                Ok::<_, PyErr>(py_coro_to_future(coro.unbind()))
+            })??;
+
+            let res = fut.await?;
+
+            if let Some(bytes) = Python::with_gil(|py| res.extract::<Option<PyBytes>>(py))? {
+                yield bytes;
+            } else {
+                break;
+            };
         }
     }
 }

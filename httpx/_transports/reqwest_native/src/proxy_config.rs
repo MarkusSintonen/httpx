@@ -1,4 +1,3 @@
-use crate::exceptions::BadHeaderError;
 use crate::utils::{HeaderMapExt, UrlExt};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -40,11 +39,11 @@ impl NativeProxyConfig {
             // Check there is only Proxy-Authorization header
             // https://github.com/seanmonstar/reqwest/issues/2552
             if headers.0.len() > 1 {
-                return Err(BadHeaderError::new_err("Only Proxy-Authorization header is allowed, for now."));
+                return Err(PyValueError::new_err("Only Proxy-Authorization header is allowed, for now."));
             }
             if let Some((name, value)) = headers.0.iter().next() {
                 if name.as_str().to_lowercase() != "proxy-authorization" {
-                    return Err(BadHeaderError::new_err("Only Proxy-Authorization header is allowed, for now."));
+                    return Err(PyValueError::new_err("Only Proxy-Authorization header is allowed, for now."));
                 }
                 proxy = proxy.custom_http_auth(value.clone());
             }

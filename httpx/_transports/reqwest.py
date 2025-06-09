@@ -22,7 +22,6 @@ from . import AsyncBaseTransport
 
 import rustimport.import_hook  # noqa:F401
 from .reqwest_native import (
-    BadUrlError,
     NativeAsyncClient,
     NativeProxyConfig,
     PoolTimeoutError,
@@ -169,8 +168,6 @@ class AsyncResponseStream(AsyncByteStream):
 def _map_errors() -> Generator[None, None, None]:
     try:
         yield
-    except BadUrlError as e:
-        raise HttpxUnsupportedProtocol(str(e)) from e
     except SendConnectionError as e:
         raise HttpxConnectError(str(e)) from e
     except SendTimeoutError as e:

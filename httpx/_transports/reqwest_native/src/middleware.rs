@@ -1,16 +1,16 @@
 use crate::asyncio::py_coro_to_future;
-use crate::utils::{
-    BytesExt, Extensions, HeaderMapExt, MethodExt, StatusCodeExt, UrlExt, VersionExt, copy_extensions, map_send_error,
-};
+use crate::runtime::Runtime;
+use crate::utils::{BytesExt, Extensions, HeaderMapExt, MethodExt, StatusCodeExt, UrlExt, VersionExt, copy_extensions};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::{IntoPyObjectExt, intern};
 use pythonize::depythonize;
-use reqwest_middleware::{Middleware, Next};
 use serde::Deserialize;
+use std::sync::Arc;
 
-pub struct MiddlewareAdapter {
+pub struct Middleware {
     handler: Py<PyAny>,
+    runtime: Arc<Runtime>,
 }
 
 #[pyclass]
@@ -33,27 +33,13 @@ struct ResponseMock {
 }
 
 #[pyclass]
-pub struct NextWrapper {
-    pub next: Option<Next<'static>>,
+pub struct Next {
+    req_sender: Option<tokio::sync::oneshot::Sender<(reqwest::Request, http::Extensions)>>,
+    resp_receiver: Option<tokio::sync::oneshot::Receiver<(reqwest::Response, http::Extensions)>>,
 }
 #[pymethods]
-impl NextWrapper {
-    async fn run(
-        &mut self,
-        // py: Python<'py>,
-        //request: Bound<'py, RequestWrapper>,
-        request: Py<RequestWrapper>,
-        extensions: Extensions,
-    ) -> PyResult<ResponseWrapper> {
-        let next = self
-            .next
-            .take()
-            .ok_or_else(|| PyRuntimeError::new_err("Next was already consumed"))?;
-        // let req = request
-        //     .borrow_mut()
-        //     .request
-        //     .take()
-        //     .ok_or_else(|| PyRuntimeError::new_err("Request was already consumed"))?;
+impl Next {
+    async fn run(&mut self, request: Py<RequestWrapper>, extensions: Extensions) -> PyResult<ResponseWrapper> {
         let req = Python::with_gil(|py| {
             request
                 .borrow_mut(py)
@@ -65,16 +51,22 @@ impl NextWrapper {
         let mut ext = http::Extensions::new();
         ext.insert(extensions);
 
-        // pyo3_async_runtimes::tokio::future_into_py(py, async move {
-        //     let mut resp = next.run(req, &mut ext).await.map_err(map_send_error)?;
-        //
-        //     if let Some(ext) = ext.get::<Extensions>() {
-        //         copy_extensions(ext, resp.extensions_mut());
-        //     }
-        //
-        //     Ok(ResponseWrapper { response: Some(resp) })
-        // })
-        let mut resp = next.run(req, &mut ext).await.map_err(map_send_error)?;
+        let req_sender = self
+            .req_sender
+            .take()
+            .ok_or_else(|| PyRuntimeError::new_err("Request sender already consumed"))?;
+        let resp_receiver = self
+            .resp_receiver
+            .take()
+            .ok_or_else(|| PyRuntimeError::new_err("Response receiver already consumed"))?;
+
+        req_sender
+            .send((req, ext))
+            .map_err(|_| PyRuntimeError::new_err("Failed to send request to next middleware"))?;
+
+        let (mut resp, ext) = resp_receiver
+            .await
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to receive response from next middleware: {}", e)))?;
 
         if let Some(ext) = ext.get::<Extensions>() {
             copy_extensions(ext, resp.extensions_mut());
@@ -90,36 +82,56 @@ impl NextWrapper {
 }
 
 #[async_trait::async_trait]
-impl Middleware for MiddlewareAdapter {
+impl reqwest_middleware::Middleware for Middleware {
     async fn handle(
         &self,
         http_request: reqwest::Request,
         http_extensions: &mut http::Extensions,
-        next: Next<'_>,
+        next: reqwest_middleware::Next<'_>,
     ) -> reqwest_middleware::Result<reqwest::Response> {
-        let (fut, next_wrap) = Python::with_gil(|py| {
-            let next: Option<Next<'static>> = Some(unsafe { std::mem::transmute(next) });
+        let req = RequestWrapper::from(http_request);
+        let ext = Extensions::from(&*http_extensions);
 
-            let req = RequestWrapper::from(http_request);
-            let ext = Extensions::from(&*http_extensions);
-            let next_wrap = Py::new(py, NextWrapper { next })?;
+        let (req_tx, req_rx) = tokio::sync::oneshot::channel::<(reqwest::Request, http::Extensions)>();
+        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel::<(reqwest::Response, http::Extensions)>();
+        let next_wrap = Next {
+            req_sender: Some(req_tx),
+            resp_receiver: Some(resp_rx),
+        };
 
+        let fut = Python::with_gil(|py| {
             let coro = self
                 .handler
-                .bind(py)
-                .call_method1(intern!(py, "handle"), (req, ext, &next_wrap))?;
-            let fut = py_coro_to_future(coro)?;
-            Ok((fut, next_wrap))
+                .call_method1(py, intern!(py, "handle"), (req, ext, next_wrap))?;
+            py_coro_to_future(coro)
         })
         .map_err(reqwest_middleware::Error::middleware::<PyErr>)?;
 
-        let resp = fut.await.map_err(reqwest_middleware::Error::middleware)?;
-        let resp = resp.map_err(reqwest_middleware::Error::middleware::<PyErr>)?;
+        let join_handle = self
+            .runtime
+            .spawn(fut)
+            .map_err(reqwest_middleware::Error::middleware::<PyErr>)?;
+
+        let (req, mut ext) = req_rx
+            .await
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to receive response from next middleware: {}", e)))
+            .map_err(reqwest_middleware::Error::middleware::<PyErr>)?;
+
+        let resp = next.run(req, &mut ext).await?;
+
+        resp_tx
+            .send((resp, ext))
+            .map_err(|_| PyRuntimeError::new_err("Failed to send request to next middleware"))
+            .map_err(reqwest_middleware::Error::middleware::<PyErr>)?;
+
+        let resp = join_handle
+            .await
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to execute middleware: {}", e)))
+            .map_err(reqwest_middleware::Error::middleware::<PyErr>)?;
 
         Python::with_gil(|py| {
-            next_wrap.try_borrow_mut(py)?.next.take(); // Make sure to consume the "next"
-
-            resp.downcast_bound::<ResponseWrapper>(py)?
+            resp?
+                .downcast_bound::<ResponseWrapper>(py)?
                 .try_borrow_mut()?
                 .response
                 .take()
@@ -129,13 +141,14 @@ impl Middleware for MiddlewareAdapter {
     }
 }
 
-impl MiddlewareAdapter {
-    pub fn new(py: Python, handler: Bound<PyAny>) -> PyResult<Self> {
+impl Middleware {
+    pub fn new(py: Python, handler: Bound<PyAny>, runtime: Arc<Runtime>) -> PyResult<Self> {
         if !handler.hasattr(intern!(py, "handle"))? {
             return Err(PyValueError::new_err("Middleware must have handle method"));
         }
-        Ok(MiddlewareAdapter {
+        Ok(Middleware {
             handler: handler.into_py_any(py)?,
+            runtime,
         })
     }
 }

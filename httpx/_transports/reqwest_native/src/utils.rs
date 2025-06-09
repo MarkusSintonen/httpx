@@ -1,5 +1,5 @@
 use crate::exceptions::{
-    ReadConnectionError, ReadTimeoutError, ReadUnknownError, SendConnectionError, SendTimeoutError, SendUnknownError,
+    ReadConnectionError, ReadError, ReadTimeoutError, SendConnectionError, SendError, SendTimeoutError,
 };
 use bytes::Bytes;
 use http::HeaderMap;
@@ -210,7 +210,7 @@ pub fn map_send_error(error: reqwest_middleware::Error) -> PyErr {
     } else if error.is_timeout() {
         SendTimeoutError::new_err(format!("Timeout on send: {}", error))
     } else {
-        SendUnknownError::new_err(format!("Unknown failure on send: {:?}", error.source()))
+        SendError::new_err(format!("Unknown failure on send: {:?}", error.source()))
     }
 }
 
@@ -220,7 +220,7 @@ pub fn map_read_error(error: reqwest::Error) -> PyErr {
     } else if error.is_timeout() {
         ReadTimeoutError::new_err(format!("Timeout on read: {}", error))
     } else {
-        ReadUnknownError::new_err(format!("Unknown failure on read: {}", error))
+        ReadError::new_err(format!("Unknown failure on read: {}", error))
     }
 }
 

@@ -57,8 +57,12 @@ async def run_async_requests(axis: Axes) -> None:
     ) -> None:
         start = time.monotonic()
         res = await client.handle_async_request("GET", URL)
-        body = await res.read()
-        assert len(body) == len(RESP), f"len={len(body)}"
+        count = 0
+        async for c in res.stream:
+            count += len(c)
+        #count = len(await res.read())
+        assert count == len(RESP), f"len={count}"
+        #assert len(body) == len(RESP), f"len={len(body)}"
         assert res.status_code == 200, f"status_code={res.status_code}"
         await res.aclose()
         timings.append(duration(start))
@@ -66,8 +70,11 @@ async def run_async_requests(axis: Axes) -> None:
     async def aiohttp_get(session: aiohttp.ClientSession, timings: List[float]) -> None:
         start = time.monotonic()
         async with session.request("GET", URL) as res:
-            body = await res.read()
-            assert len(body) == len(RESP)
+            count = 0
+            async for c in res.content.iter_any():
+                count += len(c)
+            #count = len(await res.read())
+            assert count == len(RESP)
             assert res.status == 200, f"status={res.status}"
         timings.append(duration(start))
 

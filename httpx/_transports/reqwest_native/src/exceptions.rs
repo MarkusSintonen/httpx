@@ -1,16 +1,11 @@
 use pyo3::create_exception;
-use pyo3::exceptions::{PyException, PyValueError};
+use pyo3::exceptions::PyException;
 
-create_exception!(module, BadMethodError, PyValueError);
-create_exception!(module, BadUrlError, PyValueError);
-create_exception!(module, BadHeaderError, PyValueError);
+create_exception!(module, SendError, PyException);
+create_exception!(module, SendConnectionError, SendError);
+create_exception!(module, SendTimeoutError, SendError);
+create_exception!(module, PoolTimeoutError, SendError);
 
-create_exception!(module, SendConnectionError, PyException);
-create_exception!(module, SendTimeoutError, PyException);
-create_exception!(module, SendUnknownError, PyException);
-
-create_exception!(module, PoolTimeoutError, PyException);
-
-create_exception!(module, ReadConnectionError, PyException);
-create_exception!(module, ReadTimeoutError, PyException);
-create_exception!(module, ReadUnknownError, PyException);
+create_exception!(module, ReadError, PyException);
+create_exception!(module, ReadConnectionError, ReadError);
+create_exception!(module, ReadTimeoutError, ReadError);
