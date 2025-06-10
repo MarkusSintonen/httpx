@@ -1,26 +1,22 @@
 use crate::asyncio::py_coro_to_future;
-use crate::runtime::Runtime;
-use crate::utils::{BytesExt, Extensions, HeaderMapExt, MethodExt, StatusCodeExt, UrlExt, VersionExt, copy_extensions};
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use crate::utils::{Extensions, HeaderMapExt, MethodExt, StatusCodeExt, UrlExt, VersionExt, map_send_error};
+use pyo3::exceptions::PyRuntimeError;
+use pyo3::intern;
 use pyo3::prelude::*;
-use pyo3::{IntoPyObjectExt, intern};
+use pyo3_bytes::PyBytes;
 use pythonize::depythonize;
 use serde::Deserialize;
 use std::sync::Arc;
 
-pub struct Middleware {
-    handler: Py<PyAny>,
-    runtime: Arc<Runtime>,
+#[pyclass]
+pub struct RequestWrapper {
+    request: Option<reqwest::Request>,
+    extensions: Option<Extensions>,
 }
 
 #[pyclass]
-struct RequestWrapper {
-    pub request: Option<reqwest::Request>,
-}
-
-#[pyclass]
-struct ResponseWrapper {
-    pub response: Option<reqwest::Response>,
+pub struct ResponseWrapper {
+    response: Option<reqwest::Response>,
 }
 
 #[derive(Deserialize)]
@@ -34,45 +30,49 @@ struct ResponseMock {
 
 #[pyclass]
 pub struct Next {
-    req_sender: Option<tokio::sync::oneshot::Sender<(reqwest::Request, http::Extensions)>>,
-    resp_receiver: Option<tokio::sync::oneshot::Receiver<(reqwest::Response, http::Extensions)>>,
+    client: Arc<reqwest::Client>,
+    middlewares: Arc<Vec<Py<PyAny>>>,
+    current: usize,
 }
 #[pymethods]
 impl Next {
-    async fn run(&mut self, request: Py<RequestWrapper>, extensions: Extensions) -> PyResult<ResponseWrapper> {
-        let req = Python::with_gil(|py| {
-            request
-                .borrow_mut(py)
-                .request
-                .take()
-                .ok_or_else(|| PyRuntimeError::new_err("Request was already consumed"))
-        })?;
+    async fn run(&self, request: Py<RequestWrapper>) -> PyResult<Py<ResponseWrapper>> {
+        if self.current < self.middlewares.len() {
+            let cur = &self.middlewares[self.current];
+            let next = Python::with_gil(|py| {
+                let next = Next {
+                    client: self.client.clone(),
+                    middlewares: self.middlewares.clone(),
+                    current: self.current + 1,
+                };
+                Py::new(py, next)
+            })?;
 
-        let mut ext = http::Extensions::new();
-        ext.insert(extensions);
+            let fut = Python::with_gil(|py| {
+                let coro = cur.call_method1(py, intern!(py, "handle"), (request, next))?;
+                py_coro_to_future(coro)
+            })?;
 
-        let req_sender = self
-            .req_sender
-            .take()
-            .ok_or_else(|| PyRuntimeError::new_err("Request sender already consumed"))?;
-        let resp_receiver = self
-            .resp_receiver
-            .take()
-            .ok_or_else(|| PyRuntimeError::new_err("Response receiver already consumed"))?;
+            let res = fut.await?;
 
-        req_sender
-            .send((req, ext))
-            .map_err(|_| PyRuntimeError::new_err("Failed to send request to next middleware"))?;
+            Python::with_gil(|py| Ok::<_, PyErr>(res.into_bound(py).downcast_into_exact::<ResponseWrapper>()?.unbind()))
+        } else {
+            let (req, ext) = Python::with_gil(|py| {
+                let mut request = request.try_borrow_mut(py)?;
+                let req = request
+                    .request
+                    .take()
+                    .ok_or_else(|| PyRuntimeError::new_err("Request was already consumed"))?;
+                let ext = request.extensions.take();
+                Ok::<_, PyErr>((req, ext))
+            })?;
 
-        let (mut resp, ext) = resp_receiver
-            .await
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to receive response from next middleware: {}", e)))?;
+            let mut resp = self.client.execute(req).await.map_err(map_send_error)?;
 
-        if let Some(ext) = ext.get::<Extensions>() {
-            copy_extensions(ext, resp.extensions_mut());
+            resp.extensions_mut().insert(ext);
+
+            Python::with_gil(|py| Py::new(py, ResponseWrapper { response: Some(resp) }))
         }
-
-        Ok(ResponseWrapper { response: Some(resp) })
     }
 
     fn create_response<'py>(&mut self, py: Python<'py>, response_mock: ResponseMock) -> PyResult<Py<ResponseWrapper>> {
@@ -80,75 +80,29 @@ impl Next {
         Py::new(py, ResponseWrapper { response: Some(resp) })
     }
 }
+impl Next {
+    pub async fn process(
+        client: Arc<reqwest::Client>,
+        middlewares: Arc<Vec<Py<PyAny>>>,
+        request: reqwest::Request,
+        extensions: Option<Extensions>,
+    ) -> PyResult<reqwest::Response> {
+        let req = RequestWrapper::new(request, extensions);
+        let req = Python::with_gil(|py| Py::new(py, req))?;
 
-#[async_trait::async_trait]
-impl reqwest_middleware::Middleware for Middleware {
-    async fn handle(
-        &self,
-        http_request: reqwest::Request,
-        http_extensions: &mut http::Extensions,
-        next: reqwest_middleware::Next<'_>,
-    ) -> reqwest_middleware::Result<reqwest::Response> {
-        let req = RequestWrapper::from(http_request);
-        let ext = Extensions::from(&*http_extensions);
-
-        let (req_tx, req_rx) = tokio::sync::oneshot::channel::<(reqwest::Request, http::Extensions)>();
-        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel::<(reqwest::Response, http::Extensions)>();
-        let next_wrap = Next {
-            req_sender: Some(req_tx),
-            resp_receiver: Some(resp_rx),
-        };
-
-        let fut = Python::with_gil(|py| {
-            let coro = self
-                .handler
-                .call_method1(py, intern!(py, "handle"), (req, ext, next_wrap))?;
-            py_coro_to_future(coro)
-        })
-        .map_err(reqwest_middleware::Error::middleware::<PyErr>)?;
-
-        let join_handle = self
-            .runtime
-            .spawn(fut)
-            .map_err(reqwest_middleware::Error::middleware::<PyErr>)?;
-
-        let (req, mut ext) = req_rx
-            .await
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to receive response from next middleware: {}", e)))
-            .map_err(reqwest_middleware::Error::middleware::<PyErr>)?;
-
-        let resp = next.run(req, &mut ext).await?;
-
-        resp_tx
-            .send((resp, ext))
-            .map_err(|_| PyRuntimeError::new_err("Failed to send request to next middleware"))
-            .map_err(reqwest_middleware::Error::middleware::<PyErr>)?;
-
-        let resp = join_handle
-            .await
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to execute middleware: {}", e)))
-            .map_err(reqwest_middleware::Error::middleware::<PyErr>)?;
+        let resp = Next {
+            client,
+            middlewares,
+            current: 0,
+        }
+        .run(req)
+        .await?;
 
         Python::with_gil(|py| {
-            resp?
-                .downcast_bound::<ResponseWrapper>(py)?
-                .try_borrow_mut()?
+            resp.try_borrow_mut(py)?
                 .response
                 .take()
                 .ok_or_else(|| PyRuntimeError::new_err("Response was already consumed"))
-        })
-        .map_err(reqwest_middleware::Error::middleware::<PyErr>)
-    }
-}
-
-impl Middleware {
-    pub fn new(py: Python, handler: Bound<PyAny>, runtime: Arc<Runtime>) -> PyResult<Self> {
-        if !handler.hasattr(intern!(py, "handle"))? {
-            return Err(PyValueError::new_err("Middleware must have handle method"));
-        }
-        Ok(Middleware {
-            handler: handler.into_py_any(py)?,
-            runtime,
         })
     }
 }
@@ -182,26 +136,41 @@ impl RequestWrapper {
         Ok(())
     }
 
-    fn get_body(&self) -> PyResult<Option<BytesExt>> {
+    fn get_body(&self) -> PyResult<Option<PyBytes>> {
         let body = self
             .try_get_request()?
             .body()
             .map(|b| b.as_bytes())
             .flatten()
-            .map(|b| BytesExt::from(b.to_vec()));
+            .map(|b| PyBytes::from(b.to_vec()));
         Ok(body)
     }
 
-    fn set_body(&mut self, value: Option<BytesExt>) -> PyResult<()> {
+    fn set_body(&mut self, value: Option<PyBytes>) -> PyResult<()> {
         if let Some(value) = value {
-            *self.try_mut_request()?.body_mut() = Some(reqwest::Body::from(value.0));
+            *self.try_mut_request()?.body_mut() = Some(reqwest::Body::from(value.into_inner()));
         } else {
             *self.try_mut_request()?.body_mut() = None;
         }
         Ok(())
     }
+
+    fn get_extensions(&self) -> Option<Extensions> {
+        self.extensions.clone()
+    }
+
+    fn set_extensions(&mut self, value: Option<Extensions>) {
+        self.extensions = value;
+    }
 }
 impl RequestWrapper {
+    pub fn new(request: reqwest::Request, extensions: Option<Extensions>) -> Self {
+        RequestWrapper {
+            request: Some(request),
+            extensions,
+        }
+    }
+
     fn try_get_request(&self) -> PyResult<&reqwest::Request> {
         self.request
             .as_ref()
@@ -214,11 +183,6 @@ impl RequestWrapper {
         } else {
             Err(PyRuntimeError::new_err("Request was already consumed"))
         }
-    }
-}
-impl From<reqwest::Request> for RequestWrapper {
-    fn from(value: reqwest::Request) -> Self {
-        RequestWrapper { request: Some(value) }
     }
 }
 

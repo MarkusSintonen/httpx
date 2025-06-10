@@ -1,13 +1,13 @@
 use crate::exceptions::{
     ReadConnectionError, ReadError, ReadTimeoutError, SendConnectionError, SendError, SendTimeoutError,
 };
-use bytes::Bytes;
 use http::HeaderMap;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::sync::GILOnceCell;
-use pyo3::types::{PyBytes, PyType};
+use pyo3::types::PyType;
 use pyo3::{Bound, FromPyObject, IntoPyObject, PyErr, Python};
+use pyo3_bytes::PyBytes;
 use pythonize::{depythonize, pythonize};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
@@ -35,33 +35,6 @@ pub struct VersionExt(#[serde(with = "http_serde::version")] pub http::Version);
 pub struct Extensions(pub serde_json::Map<String, serde_json::Value>);
 #[derive(Serialize, Deserialize, Clone)]
 pub struct StatusCodeExt(#[serde(with = "http_serde::status_code")] pub http::StatusCode);
-
-#[derive(Clone, Debug)]
-pub struct BytesExt(pub Bytes);
-impl From<Vec<u8>> for BytesExt {
-    fn from(bytes: Vec<u8>) -> Self {
-        BytesExt(Bytes::from(bytes))
-    }
-}
-impl From<&[u8]> for BytesExt {
-    fn from(bytes: &[u8]) -> Self {
-        BytesExt(Bytes::from(bytes.to_vec()))
-    }
-}
-impl<'py> IntoPyObject<'py> for BytesExt {
-    type Target = PyBytes;
-    type Output = Bound<'py, PyBytes>;
-    type Error = PyErr;
-    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
-        Ok(PyBytes::new(py, &self.0))
-    }
-}
-impl<'py> FromPyObject<'py> for BytesExt {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
-        let slice: &[u8] = ob.extract()?;
-        Ok(BytesExt(Bytes::copy_from_slice(slice)))
-    }
-}
 
 impl<'py> IntoPyObject<'py> for UrlExt {
     type Target = PyAny;
@@ -204,7 +177,7 @@ fn multidict(py: Python) -> PyResult<Bound<PyAny>> {
     MULTIDICT_CELL.import(py, "multidict", "CIMultiDict")?.call0()
 }
 
-pub fn map_send_error(error: reqwest_middleware::Error) -> PyErr {
+pub fn map_send_error(error: reqwest::Error) -> PyErr {
     if error.is_connect() {
         SendConnectionError::new_err(format!("Connection error on send: {}", error))
     } else if error.is_timeout() {
@@ -227,5 +200,5 @@ pub fn map_read_error(error: reqwest::Error) -> PyErr {
 #[derive(FromPyObject, IntoPyObject)]
 pub enum Body {
     Str(String),
-    Bytes(pyo3_bytes::PyBytes),
+    Bytes(PyBytes),
 }
