@@ -1,11 +1,10 @@
-use crate::utils::{HeaderMapExt, UrlExt};
+use crate::http_types::{HeaderMapExt, UrlExt};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use reqwest::Proxy;
 
-#[pyclass]
-#[derive(Clone)]
-pub struct NativeProxyConfig {
+#[pyclass(frozen)]
+pub struct ProxyConfig {
     #[pyo3(get)]
     url: UrlExt,
     #[pyo3(get)]
@@ -15,10 +14,10 @@ pub struct NativeProxyConfig {
 }
 
 #[pymethods]
-impl NativeProxyConfig {
+impl ProxyConfig {
     #[new]
     fn py_new(url: UrlExt, basic_auth: Option<(String, String)>, headers: Option<HeaderMapExt>) -> PyResult<Self> {
-        Ok(NativeProxyConfig {
+        Ok(ProxyConfig {
             url,
             basic_auth,
             headers,
@@ -26,7 +25,7 @@ impl NativeProxyConfig {
     }
 }
 
-impl NativeProxyConfig {
+impl ProxyConfig {
     pub fn build_reqwest_proxy(&self) -> PyResult<Proxy> {
         let url: reqwest::Url = self.url.clone().try_into()?;
 

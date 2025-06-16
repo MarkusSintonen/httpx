@@ -1,9 +1,9 @@
 use crate::asyncio::py_coro_to_future;
-use crate::utils::{Extensions, HeaderMapExt, MethodExt, StatusCodeExt, UrlExt, VersionExt, map_send_error};
+use crate::http_types::{Extensions, HeaderMapExt, MethodExt, RequestBody, StatusCodeExt, UrlExt, VersionExt};
+use crate::utils::map_send_error;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::intern;
 use pyo3::prelude::*;
-use pyo3_bytes::PyBytes;
 use pythonize::depythonize;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -12,6 +12,8 @@ use std::sync::Arc;
 pub struct RequestWrapper {
     request: Option<reqwest::Request>,
     extensions: Option<Extensions>,
+    #[pyo3(get, set)]
+    body: Option<Py<RequestBody>>,
 }
 
 #[pyclass]
@@ -85,9 +87,10 @@ impl Next {
         client: Arc<reqwest::Client>,
         middlewares: Arc<Vec<Py<PyAny>>>,
         request: reqwest::Request,
+        body: Option<Py<RequestBody>>,
         extensions: Option<Extensions>,
     ) -> PyResult<reqwest::Response> {
-        let req = RequestWrapper::new(request, extensions);
+        let req = RequestWrapper::new(request, body, extensions);
         let req = Python::with_gil(|py| Py::new(py, req))?;
 
         let resp = Next {
@@ -136,25 +139,6 @@ impl RequestWrapper {
         Ok(())
     }
 
-    fn get_body(&self) -> PyResult<Option<PyBytes>> {
-        let body = self
-            .try_get_request()?
-            .body()
-            .map(|b| b.as_bytes())
-            .flatten()
-            .map(|b| PyBytes::from(b.to_vec()));
-        Ok(body)
-    }
-
-    fn set_body(&mut self, value: Option<PyBytes>) -> PyResult<()> {
-        if let Some(value) = value {
-            *self.try_mut_request()?.body_mut() = Some(reqwest::Body::from(value.into_inner()));
-        } else {
-            *self.try_mut_request()?.body_mut() = None;
-        }
-        Ok(())
-    }
-
     fn get_extensions(&self) -> Option<Extensions> {
         self.extensions.clone()
     }
@@ -164,10 +148,11 @@ impl RequestWrapper {
     }
 }
 impl RequestWrapper {
-    pub fn new(request: reqwest::Request, extensions: Option<Extensions>) -> Self {
+    pub fn new(request: reqwest::Request, body: Option<Py<RequestBody>>, extensions: Option<Extensions>) -> Self {
         RequestWrapper {
             request: Some(request),
             extensions,
+            body,
         }
     }
 

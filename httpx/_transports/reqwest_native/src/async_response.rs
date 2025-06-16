@@ -1,19 +1,21 @@
-use crate::utils::{Extensions, HeaderMapExt, StatusCodeExt, VersionExt, map_read_error};
+use crate::http_types::{Extensions, HeaderMapExt, StatusCodeExt, VersionExt};
+use crate::utils::map_read_error;
 use pyo3::prelude::*;
 use pyo3_bytes::PyBytes;
+use pythonize::pythonize;
 use std::collections::VecDeque;
 use tokio::sync::OwnedSemaphorePermit;
 
 #[pyclass]
 pub struct Response {
     #[pyo3(get)]
-    status_code: StatusCodeExt,
+    status_code: Py<PyAny>,
     #[pyo3(get)]
-    headers: HeaderMapExt,
+    headers: Py<PyAny>,
     #[pyo3(get)]
-    http_version: VersionExt,
+    http_version: Py<PyAny>,
     #[pyo3(get)]
-    extensions: Extensions,
+    extensions: Py<PyAny>,
 
     inner: Option<reqwest::Response>,
     request_semaphore_permit: Option<OwnedSemaphorePermit>,
@@ -65,10 +67,10 @@ impl Response {
 
         Python::with_gil(|py| {
             let response = Response {
-                status_code,
-                headers,
-                http_version,
-                extensions,
+                status_code: pythonize(py, &status_code)?.unbind(),
+                headers: pythonize(py, &headers)?.unbind(),
+                http_version: pythonize(py, &http_version)?.unbind(),
+                extensions: pythonize(py, &extensions)?.unbind(),
                 inner: resp,
                 request_semaphore_permit: request_permit,
                 init_chunks,
