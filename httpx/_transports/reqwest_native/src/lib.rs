@@ -1,27 +1,27 @@
 // rustimport:pyo3
 
-mod async_client;
-mod async_response;
 mod asyncio;
+mod client;
 mod exceptions;
 mod http_types;
 mod middleware;
 mod proxy_config;
+mod response;
 mod runtime;
 mod utils;
 
-use crate::async_client::AsyncClient;
-use crate::async_response::Response;
+use crate::client::Client;
 use crate::exceptions::{
     PoolTimeoutError, ReadBodyError, ReadError, ReadTimeoutError, RequestError, SendBodyError, SendConnectionError,
     SendError, SendTimeoutError,
 };
 use crate::proxy_config::ProxyConfig;
+use crate::response::Response;
 use pyo3::prelude::*;
 
 #[pymodule]
 fn reqwest_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    module.add_class::<AsyncClient>()?;
+    module.add_class::<Client>()?;
     module.add_class::<Response>()?;
     module.add_class::<ProxyConfig>()?;
 

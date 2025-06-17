@@ -1,8 +1,8 @@
-use crate::async_response::Response;
 use crate::exceptions::{PoolTimeoutError, SendError};
 use crate::http_types::{Extensions, HeaderMapExt, MethodExt, RequestBody, UrlExt};
 use crate::middleware::Next;
 use crate::proxy_config::ProxyConfig;
+use crate::response::Response;
 use crate::runtime::Runtime;
 use crate::utils::{copy_extensions, map_send_error};
 use futures_util::FutureExt;
@@ -15,7 +15,7 @@ use std::time::Duration;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 #[pyclass]
-pub struct AsyncClient {
+pub struct Client {
     client: Option<Arc<reqwest::Client>>,
     runtime: Arc<Runtime>,
     request_semaphore: Option<Arc<Semaphore>>,
@@ -27,7 +27,7 @@ pub struct AsyncClient {
 }
 
 #[pymethods]
-impl AsyncClient {
+impl Client {
     #[new]
     #[pyo3(signature = (
         *,
@@ -104,7 +104,7 @@ impl AsyncClient {
             .build()
             .map_err(|e| PyValueError::new_err(format!("Failed to create HTTP client: {}", e)))?;
 
-        Ok(AsyncClient {
+        Ok(Client {
             client: Some(Arc::new(client)),
             request_semaphore: max_connections.map(|limit| Arc::new(Semaphore::new(limit))),
             middlewares: middlewares.map(Arc::new),
@@ -194,7 +194,7 @@ impl AsyncClient {
     }
 }
 
-impl AsyncClient {
+impl Client {
     async fn limit_connections(
         request_semaphore: Arc<Semaphore>,
         connect_timeout: Option<Duration>,
