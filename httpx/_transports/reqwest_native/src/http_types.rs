@@ -201,14 +201,14 @@ impl RequestBody {
         Ok(self
             .body
             .as_ref()
-            .ok_or_else(|| PyRuntimeError::new_err("Request body has already been consumed"))?
+            .ok_or_else(|| PyRuntimeError::new_err("Request body was already consumed"))?
             .as_bytes()
             .map(|b| PyBytes::from(b.to_vec())))
     }
 
     fn get_stream(&self) -> PyResult<Option<&Py<PyAny>>> {
         if self.body.is_none() {
-            return Err(PyRuntimeError::new_err("Request body has already been consumed"));
+            return Err(PyRuntimeError::new_err("Request body was already consumed"));
         }
         Ok(self.stream.as_ref())
     }
@@ -217,6 +217,6 @@ impl RequestBody {
     pub fn take_reqwest_body(&mut self) -> PyResult<reqwest::Body> {
         self.body
             .take()
-            .ok_or_else(|| PyRuntimeError::new_err("Request body has already been consumed"))
+            .ok_or_else(|| PyRuntimeError::new_err("Request body was already consumed"))
     }
 }

@@ -32,10 +32,10 @@ impl Runtime {
 
         let handle = handle_rx
             .recv()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to recv tokio runtime: {}", e)))?;
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to recv tokio runtime: {}", e)))??;
 
         Ok(Runtime {
-            inner: Some(handle?),
+            inner: Some(handle),
             close_tx,
             shutdown_rx: shutdown_rx.shared(),
         })

@@ -1,5 +1,5 @@
 use crate::exceptions::{
-    ReadConnectionError, ReadError, ReadTimeoutError, SendConnectionError, SendError, SendTimeoutError,
+    ReadBodyError, ReadError, ReadTimeoutError, SendBodyError, SendConnectionError, SendError, SendTimeoutError,
 };
 use crate::http_types::Extensions;
 use pyo3::PyErr;
@@ -15,22 +15,32 @@ pub fn copy_extensions<'a>(from: &Extensions, to: &'a mut http::Extensions) -> &
     to
 }
 
-pub fn map_send_error(error: reqwest::Error) -> PyErr {
-    if error.is_connect() {
-        SendConnectionError::new_err(format!("Connection error on send: {}", error))
-    } else if error.is_timeout() {
-        SendTimeoutError::new_err(format!("Timeout on send: {}", error))
+pub fn map_send_error(e: reqwest::Error) -> PyErr {
+    if e.is_connect() {
+        SendConnectionError::new_err(format!("Connection error on send: {}", fmt_error(&e)))
+    } else if e.is_timeout() {
+        SendTimeoutError::new_err(format!("Timeout on send: {}", fmt_error(&e)))
+    } else if e.is_body() {
+        SendBodyError::new_err(format!("Error on sending body: {}", fmt_error(&e)))
     } else {
-        SendError::new_err(format!("Unknown failure on send: {:?}", error.source()))
+        SendError::new_err(format!("Error on send: {}", fmt_error(&e)))
     }
 }
 
-pub fn map_read_error(error: reqwest::Error) -> PyErr {
-    if error.is_connect() {
-        ReadConnectionError::new_err(format!("Connection error on read: {}", error))
-    } else if error.is_timeout() {
-        ReadTimeoutError::new_err(format!("Timeout on read: {}", error))
+pub fn map_read_error(e: reqwest::Error) -> PyErr {
+    if e.is_body() {
+        ReadBodyError::new_err(format!("Error on reading body: {}", fmt_error(&e)))
+    } else if e.is_timeout() {
+        ReadTimeoutError::new_err(format!("Timeout on reading body: {}", fmt_error(&e)))
     } else {
-        ReadError::new_err(format!("Unknown failure on read: {}", error))
+        ReadError::new_err(format!("Error on reading body: {}", fmt_error(&e)))
     }
+}
+
+fn fmt_error<E: Error>(error: &E) -> String {
+    let mut message = error.to_string();
+    if let Some(source) = error.source() {
+        message.push_str(&format!(" ({})", source));
+    }
+    message
 }

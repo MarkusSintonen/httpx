@@ -1,11 +1,13 @@
 use crate::async_response::Response;
-use crate::exceptions::PoolTimeoutError;
+use crate::exceptions::{PoolTimeoutError, SendError};
 use crate::http_types::{Extensions, HeaderMapExt, MethodExt, RequestBody, UrlExt};
 use crate::middleware::Next;
 use crate::proxy_config::ProxyConfig;
 use crate::runtime::Runtime;
 use crate::utils::{copy_extensions, map_send_error};
+use futures_util::FutureExt;
 use pyo3::coroutine::CancelHandle;
+use pyo3::exceptions::asyncio::CancelledError;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use std::sync::Arc;
@@ -100,7 +102,7 @@ impl AsyncClient {
         let runtime = Arc::new(Runtime::start()?);
         let client = client
             .build()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to create HTTP client: {}", e)))?;
+            .map_err(|e| PyValueError::new_err(format!("Failed to create HTTP client: {}", e)))?;
 
         Ok(AsyncClient {
             client: Some(Arc::new(client)),
@@ -150,9 +152,17 @@ impl AsyncClient {
                 None
             };
 
-            let mut request = Self::request_builder(&client, method, url, headers, timeout)?
+            let url: reqwest::Url = url.try_into()?;
+            let mut req_builder = client.request(method.0, url);
+            if let Some(headers) = headers {
+                req_builder = req_builder.headers(headers.0);
+            }
+            if let Some(timeout) = timeout {
+                req_builder = req_builder.timeout(timeout);
+            }
+            let mut request = req_builder
                 .build()
-                .map_err(|e| PyRuntimeError::new_err(format!("Failed to build request: {}", e)))?;
+                .map_err(|e| PyValueError::new_err(format!("Failed to build request: {}", e)))?;
 
             let mut response = if let Some(middlewares) = middlewares {
                 Next::process(client, middlewares, request, py_body, extensions.clone()).await?
@@ -172,10 +182,10 @@ impl AsyncClient {
             res = join_handle => {
                 match res {
                     Ok(res) => res,
-                    Err(e) => Err(PyRuntimeError::new_err(format!("Client was closed: {}", e))),
+                    Err(e) => Err(SendError::new_err(format!("Client was closed: {}", e))),
                 }
             },
-            _ = cancel.cancelled() => Err(PyRuntimeError::new_err("Request was cancelled")),
+            _ = cancel.cancelled().fuse() => Err(CancelledError::new_err("Request was cancelled")),
         }
     }
 
@@ -185,24 +195,6 @@ impl AsyncClient {
 }
 
 impl AsyncClient {
-    fn request_builder(
-        client: &reqwest::Client,
-        method: MethodExt,
-        url: UrlExt,
-        headers: Option<HeaderMapExt>,
-        timeout: Option<Duration>,
-    ) -> PyResult<reqwest::RequestBuilder> {
-        let url: reqwest::Url = url.try_into()?;
-        let mut req_builder = client.request(method.0, url);
-        if let Some(headers) = headers {
-            req_builder = req_builder.headers(headers.0);
-        }
-        if let Some(timeout) = timeout {
-            req_builder = req_builder.timeout(timeout);
-        }
-        Ok(req_builder)
-    }
-
     async fn limit_connections(
         request_semaphore: Arc<Semaphore>,
         connect_timeout: Option<Duration>,

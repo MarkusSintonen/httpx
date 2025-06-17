@@ -30,9 +30,14 @@ impl Response {
         }
 
         if let Some(inner) = self.inner.as_mut() {
-            Ok(inner.chunk().await.map_err(map_read_error)?.map(PyBytes::new))
+            match inner.chunk().await.map_err(map_read_error)? {
+                Some(chunk) => Ok(Some(PyBytes::new(chunk))),
+                None => {
+                    self.close(); // No more chunks available, so close the response
+                    Ok(None)
+                }
+            }
         } else {
-            self.close();
             Ok(None)
         }
     }
