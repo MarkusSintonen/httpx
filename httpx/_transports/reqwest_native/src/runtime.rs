@@ -8,7 +8,7 @@ pub struct Runtime {
     shutdown_rx: futures_util::future::Shared<tokio::sync::oneshot::Receiver<()>>,
 }
 impl Runtime {
-    pub fn start() -> PyResult<Self> {
+    pub fn start_new() -> PyResult<Self> {
         let (handle_tx, handle_rx) = std::sync::mpsc::channel::<PyResult<tokio::runtime::Handle>>();
         let (close_tx, mut close_rx) = tokio::sync::mpsc::channel::<()>(1);
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -60,7 +60,6 @@ impl Runtime {
     }
 
     pub async fn close(&self) {
-        // Avoiding mut in close
         let _ = self.close_tx.try_send(());
         let _ = self.shutdown_rx.clone().await;
     }
@@ -68,6 +67,5 @@ impl Runtime {
 impl Drop for Runtime {
     fn drop(&mut self) {
         let _ = self.close_tx.try_send(());
-        self.inner.take().map(drop);
     }
 }

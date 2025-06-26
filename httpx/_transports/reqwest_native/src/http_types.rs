@@ -1,6 +1,6 @@
 use crate::asyncio::py_async_gen_to_stream;
 use http::HeaderMap;
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::sync::GILOnceCell;
 use pyo3::types::PyType;
@@ -21,6 +21,8 @@ pub struct VersionExt(#[serde(with = "http_serde::version")] pub http::Version);
 pub struct Extensions(pub serde_json::Map<String, serde_json::Value>);
 #[derive(Serialize, Deserialize, Clone)]
 pub struct StatusCodeExt(#[serde(with = "http_serde::status_code")] pub http::StatusCode);
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct JsonValue(pub serde_json::Value);
 
 impl<'py> IntoPyObject<'py> for UrlExt {
     type Target = PyAny;
@@ -158,6 +160,12 @@ impl From<http::StatusCode> for StatusCodeExt {
     }
 }
 
+impl<'py> FromPyObject<'py> for JsonValue {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+        Ok(depythonize(ob)?)
+    }
+}
+
 fn multidict(py: Python) -> PyResult<Bound<PyAny>> {
     static MULTIDICT_CELL: GILOnceCell<Py<PyType>> = GILOnceCell::new();
     MULTIDICT_CELL.import(py, "multidict", "CIMultiDict")?.call0()
@@ -165,58 +173,64 @@ fn multidict(py: Python) -> PyResult<Bound<PyAny>> {
 
 #[pyclass]
 pub struct RequestBody {
-    body: Option<reqwest::Body>,
-    stream: Option<Py<PyAny>>,
+    body: Body,
 }
 #[pymethods]
 impl RequestBody {
     #[staticmethod]
-    fn from_str(body: String) -> PyResult<Self> {
-        let body = reqwest::Body::from(body.into_bytes());
-        Ok(RequestBody {
-            body: Some(body),
-            stream: None,
-        })
-    }
-
-    #[staticmethod]
-    fn from_bytes(body: PyBytes) -> Self {
-        let body = reqwest::Body::from(body.into_inner());
+    pub fn from_str(body: String) -> Self {
         RequestBody {
-            body: Some(body),
-            stream: None,
+            body: Body::Bytes(PyBytes::from(body.into_bytes())),
         }
     }
 
     #[staticmethod]
-    fn from_stream(py: Python, stream: Py<PyAny>) -> Self {
-        let body = reqwest::Body::wrap_stream(py_async_gen_to_stream(stream.clone_ref(py)));
+    pub fn from_bytes(body: PyBytes) -> Self {
         RequestBody {
-            body: Some(body),
-            stream: Some(stream),
+            body: Body::Bytes(body),
         }
     }
 
-    fn get_bytes(&self) -> PyResult<Option<PyBytes>> {
-        Ok(self
-            .body
-            .as_ref()
-            .ok_or_else(|| PyRuntimeError::new_err("Request body was already consumed"))?
-            .as_bytes()
-            .map(|b| PyBytes::from(b.to_vec())))
+    #[staticmethod]
+    pub fn from_stream(async_gen: Py<PyAny>) -> Self {
+        RequestBody {
+            body: Body::Stream(async_gen),
+        }
     }
 
-    fn get_stream(&self) -> PyResult<Option<&Py<PyAny>>> {
-        if self.body.is_none() {
-            return Err(PyRuntimeError::new_err("Request body was already consumed"));
+    fn get_bytes(&self) -> Option<PyBytes> {
+        match &self.body {
+            Body::Bytes(bytes) => Some(PyBytes::from(bytes.as_slice().to_vec())),
+            Body::Stream(_) => None,
         }
-        Ok(self.stream.as_ref())
+    }
+
+    fn get_stream(&self) -> Option<&Py<PyAny>> {
+        match &self.body {
+            Body::Bytes(_) => None,
+            Body::Stream(async_gen) => Some(async_gen),
+        }
     }
 }
-impl RequestBody {
-    pub fn take_reqwest_body(&mut self) -> PyResult<reqwest::Body> {
-        self.body
-            .take()
-            .ok_or_else(|| PyRuntimeError::new_err("Request body was already consumed"))
+impl Into<reqwest::Body> for RequestBody {
+    fn into(self) -> reqwest::Body {
+        match self.body {
+            Body::Bytes(bytes) => reqwest::Body::from(bytes.into_inner()),
+            Body::Stream(async_gen) => reqwest::Body::wrap_stream(py_async_gen_to_stream(async_gen)),
+        }
     }
+}
+impl Clone for RequestBody {
+    fn clone(&self) -> Self {
+        let body = match &self.body {
+            Body::Bytes(bytes) => Body::Bytes(PyBytes::from(bytes.as_slice().to_vec())),
+            Body::Stream(stream) => Body::Stream(Python::with_gil(|py| stream.clone_ref(py))),
+        };
+        RequestBody { body }
+    }
+}
+
+enum Body {
+    Bytes(PyBytes),
+    Stream(Py<PyAny>),
 }

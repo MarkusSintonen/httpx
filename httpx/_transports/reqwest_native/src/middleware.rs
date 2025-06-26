@@ -1,20 +1,12 @@
 use crate::asyncio::py_coro_to_future;
-use crate::http_types::{Extensions, HeaderMapExt, MethodExt, RequestBody, StatusCodeExt, UrlExt, VersionExt};
-use crate::utils::map_send_error;
+use crate::http_types::{Extensions, HeaderMapExt, StatusCodeExt, UrlExt, VersionExt};
+use crate::request_wrapper::RequestWrapper;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::intern;
 use pyo3::prelude::*;
 use pythonize::depythonize;
 use serde::Deserialize;
 use std::sync::Arc;
-
-#[pyclass]
-pub struct RequestWrapper {
-    request: Option<reqwest::Request>,
-    extensions: Option<Extensions>,
-    #[pyo3(get, set)]
-    body: Option<Py<RequestBody>>,
-}
 
 #[pyclass]
 pub struct ResponseWrapper {
@@ -62,20 +54,7 @@ impl Next {
                 Ok::<_, PyErr>(res.into_bound(py).downcast_into_exact::<ResponseWrapper>()?.unbind())
             })
         } else {
-            let (req, ext) = Python::with_gil(|py| {
-                let mut request = request.try_borrow_mut(py)?;
-                let req = request
-                    .request
-                    .take()
-                    .ok_or_else(|| PyRuntimeError::new_err("Request was already consumed"))?;
-                let ext = request.extensions.take();
-                Ok::<_, PyErr>((req, ext))
-            })?;
-
-            let mut resp = self.client.execute(req).await.map_err(map_send_error)?;
-
-            resp.extensions_mut().insert(ext);
-
+            let resp = RequestWrapper::py_execute(request, &self.client).await?;
             Python::with_gil(|py| Py::new(py, ResponseWrapper { response: Some(resp) }))
         }
     }
@@ -89,18 +68,14 @@ impl Next {
     pub async fn process(
         client: Arc<reqwest::Client>,
         middlewares: Arc<Vec<Py<PyAny>>>,
-        request: reqwest::Request,
-        body: Option<Py<RequestBody>>,
-        extensions: Option<Extensions>,
+        request: RequestWrapper,
     ) -> PyResult<reqwest::Response> {
-        let req = RequestWrapper::new(request, body, extensions);
-
         let resp = Next {
             client,
             middlewares,
             current: 0,
         }
-        .run(Python::with_gil(|py| Py::new(py, req))?)
+        .run(Python::with_gil(|py| Py::new(py, request))?)
         .await?;
 
         Python::with_gil(|py| {
@@ -109,67 +84,6 @@ impl Next {
                 .take()
                 .ok_or_else(|| PyRuntimeError::new_err("Response was already consumed"))
         })
-    }
-}
-
-#[pymethods]
-impl RequestWrapper {
-    fn get_method(&self) -> PyResult<MethodExt> {
-        Ok(self.try_get_request()?.method().clone().into())
-    }
-
-    fn set_method(&mut self, value: MethodExt) -> PyResult<()> {
-        *self.try_mut_request()?.method_mut() = value.0;
-        Ok(())
-    }
-
-    fn get_url(&self) -> PyResult<UrlExt> {
-        self.try_get_request()?.url().clone().try_into()
-    }
-
-    fn set_url(&mut self, value: UrlExt) -> PyResult<()> {
-        *self.try_mut_request()?.url_mut() = value.try_into()?;
-        Ok(())
-    }
-
-    fn get_headers(&self) -> PyResult<HeaderMapExt> {
-        Ok(self.try_get_request()?.headers().clone().into())
-    }
-
-    fn set_headers(&mut self, value: HeaderMapExt) -> PyResult<()> {
-        *self.try_mut_request()?.headers_mut() = value.0;
-        Ok(())
-    }
-
-    fn get_extensions(&self) -> Option<Extensions> {
-        self.extensions.clone()
-    }
-
-    fn set_extensions(&mut self, value: Option<Extensions>) {
-        self.extensions = value;
-    }
-}
-impl RequestWrapper {
-    pub fn new(request: reqwest::Request, body: Option<Py<RequestBody>>, extensions: Option<Extensions>) -> Self {
-        RequestWrapper {
-            request: Some(request),
-            extensions,
-            body,
-        }
-    }
-
-    fn try_get_request(&self) -> PyResult<&reqwest::Request> {
-        self.request
-            .as_ref()
-            .ok_or_else(|| PyRuntimeError::new_err("Request was already consumed"))
-    }
-
-    fn try_mut_request(&mut self) -> PyResult<&mut reqwest::Request> {
-        if let Some(req) = self.request.as_mut() {
-            Ok(req)
-        } else {
-            Err(PyRuntimeError::new_err("Request was already consumed"))
-        }
     }
 }
 
@@ -213,11 +127,9 @@ impl ResponseWrapper {
     }
 
     fn try_mut_response(&mut self) -> PyResult<&mut reqwest::Response> {
-        if let Some(req) = self.response.as_mut() {
-            Ok(req)
-        } else {
-            Err(PyRuntimeError::new_err("Response was already consumed"))
-        }
+        self.response
+            .as_mut()
+            .ok_or_else(|| PyRuntimeError::new_err("Response was already consumed"))
     }
 }
 
@@ -228,25 +140,23 @@ impl<'py> FromPyObject<'py> for ResponseMock {
 }
 impl TryInto<reqwest::Response> for ResponseMock {
     type Error = PyErr;
-    fn try_into(self) -> PyResult<reqwest::Response> {
+    fn try_into(mut self) -> PyResult<reqwest::Response> {
         let mut res = http::Response::builder();
-        if let Some(status_code) = &self.status_code {
+        if let Some(status_code) = self.status_code.take() {
             res = res.status(status_code.0);
         }
-        if let Some(headers) = &self.headers {
-            for (k, v) in headers.0.iter() {
-                res = res.header(k, v);
-            }
+        if let Some(headers) = self.headers.take() {
+            res.headers_mut().map(|h| *h = headers.0);
         }
-        if let Some(version) = &self.version {
+        if let Some(version) = self.version.take() {
             res = res.version(version.0);
         }
-        if let Some(extensions) = &self.extensions {
-            res = res.extension(extensions.clone());
+        if let Some(extensions) = self.extensions.take() {
+            res = res.extension(extensions);
         }
         let res = res
-            .body(self.body.clone().unwrap_or_default())
-            .map_err(|e| PyValueError::new_err(format!("Failed to build response: {}", e.to_string())))?;
+            .body(self.body.take().unwrap_or_default())
+            .map_err(|e| PyValueError::new_err(format!("Failed to build response: {}", e)))?;
         Ok(reqwest::Response::from(res))
     }
 }

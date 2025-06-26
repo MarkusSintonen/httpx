@@ -2,10 +2,15 @@
 
 mod asyncio;
 mod client;
+mod client_builder;
 mod exceptions;
 mod http_types;
 mod middleware;
+mod multipart_form;
 mod proxy_config;
+mod request;
+mod request_builder;
+mod request_wrapper;
 mod response;
 mod runtime;
 mod utils;
@@ -15,14 +20,20 @@ use crate::exceptions::{
     PoolTimeoutError, ReadBodyError, ReadError, ReadTimeoutError, RequestError, SendBodyError, SendConnectionError,
     SendError, SendTimeoutError,
 };
+use crate::middleware::Next;
 use crate::proxy_config::ProxyConfig;
+use crate::request::Request;
+use crate::request_builder::RequestBuilder;
 use crate::response::Response;
 use pyo3::prelude::*;
 
 #[pymodule]
 fn reqwest_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<Client>()?;
+    module.add_class::<RequestBuilder>()?;
+    module.add_class::<Request>()?;
     module.add_class::<Response>()?;
+    module.add_class::<Next>()?;
     module.add_class::<ProxyConfig>()?;
 
     module.add("RequestError", module.py().get_type::<RequestError>())?;

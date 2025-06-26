@@ -24,6 +24,14 @@ pub struct Response {
 
 #[pymethods]
 impl Response {
+    async fn __aenter__(slf: Py<Self>) -> Py<Self> {
+        slf
+    }
+
+    async fn __aexit__(slf: Py<Self>, _exc_type: Py<PyAny>, _exc_val: Py<PyAny>, _traceback: Py<PyAny>) {
+        Python::with_gil(|py| slf.borrow_mut(py).close());
+    }
+
     async fn next_chunk<'py>(&mut self) -> PyResult<Option<PyBytes>> {
         if let Some(chunk) = self.init_chunks.pop_front() {
             return Ok(Some(chunk));
@@ -51,7 +59,7 @@ impl Response {
     pub async fn initialize(
         mut response: reqwest::Response,
         mut request_semaphore_permit: Option<OwnedSemaphorePermit>,
-    ) -> PyResult<Py<Response>> {
+    ) -> PyResult<Response> {
         let status_code = StatusCodeExt::from(response.status());
         let headers = HeaderMapExt(response.headers().clone());
         let http_version = VersionExt::from(response.version());
@@ -71,7 +79,7 @@ impl Response {
         };
 
         Python::with_gil(|py| {
-            let response = Response {
+            let resp = Response {
                 status_code: pythonize(py, &status_code)?.unbind(),
                 headers: pythonize(py, &headers)?.unbind(),
                 http_version: pythonize(py, &http_version)?.unbind(),
@@ -80,7 +88,7 @@ impl Response {
                 request_semaphore_permit: request_permit,
                 init_chunks,
             };
-            Py::new(py, response)
+            Ok(resp)
         })
     }
 
