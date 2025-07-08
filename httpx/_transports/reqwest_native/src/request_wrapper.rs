@@ -1,4 +1,5 @@
-use crate::http_types::{Extensions, HeaderMapExt, MethodExt, RequestBody, UrlExt};
+use crate::http_types::{Extensions, HeaderMapExt, MethodExt, UrlExt};
+use crate::request_body::RequestBody;
 use crate::utils::{map_send_error, move_extensions};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -7,7 +8,6 @@ use pyo3::{PyResult, pymethods};
 #[pyclass]
 pub struct RequestWrapper {
     inner: Option<reqwest::Request>,
-    #[pyo3(get, set)]
     body: Option<RequestBody>,
     extensions: Option<Extensions>,
 }
@@ -45,6 +45,19 @@ impl RequestWrapper {
         Ok(())
     }
 
+    fn get_body(&self) -> PyResult<Option<RequestBody>> {
+        self.body.as_ref().map(|b| b.try_clone()).transpose()
+    }
+
+    fn set_body<'py>(&mut self, value: Bound<'py, PyAny>) -> PyResult<()> {
+        if value.is_none() {
+            self.body = None;
+        } else {
+            self.body = Some(value.downcast::<RequestBody>()?.try_borrow()?.try_clone()?);
+        }
+        Ok(())
+    }
+
     fn get_extensions(&self) -> Option<Extensions> {
         self.extensions.clone()
     }
@@ -53,21 +66,8 @@ impl RequestWrapper {
         self.extensions = value;
     }
 
-    pub fn clone(&mut self) -> PyResult<Self> {
-        let inner = self
-            .inner
-            .take()
-            .ok_or_else(|| PyRuntimeError::new_err("Request was already sent"))?;
-        let new_inner = inner
-            .try_clone()
-            .ok_or_else(|| PyRuntimeError::new_err("Failed to clone request"))?;
-        self.inner = Some(inner);
-
-        Ok(RequestWrapper {
-            inner: Some(new_inner),
-            body: self.body.clone(),
-            extensions: self.extensions.clone(),
-        })
+    pub fn __copy__(&mut self) -> PyResult<Self> {
+        self.try_clone()
     }
 }
 impl RequestWrapper {
@@ -119,9 +119,26 @@ impl RequestWrapper {
         ext: Option<Extensions>,
         client: &reqwest::Client,
     ) -> PyResult<reqwest::Response> {
-        *inner.body_mut() = body.map(|b| b.into());
+        *inner.body_mut() = body.map(|b| b.try_into()).transpose()?;
         let mut resp = client.execute(inner).await.map_err(map_send_error)?;
         ext.map(|ext| move_extensions(ext, resp.extensions_mut()));
         Ok(resp)
+    }
+
+    pub fn try_clone(&mut self) -> PyResult<Self> {
+        let inner = self
+            .inner
+            .take()
+            .ok_or_else(|| PyRuntimeError::new_err("Request was already sent"))?;
+        let new_inner = inner
+            .try_clone()
+            .ok_or_else(|| PyRuntimeError::new_err("Failed to clone request"))?;
+        self.inner = Some(inner);
+
+        Ok(RequestWrapper {
+            inner: Some(new_inner),
+            body: self.body.as_ref().map(|b| b.try_clone()).transpose()?,
+            extensions: self.extensions.clone(),
+        })
     }
 }

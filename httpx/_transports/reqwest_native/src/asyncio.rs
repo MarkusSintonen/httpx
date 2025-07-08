@@ -1,79 +1,66 @@
-use async_stream::try_stream;
-use futures_util::TryStream;
+use futures_util::FutureExt;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::sync::GILOnceCell;
-use pyo3::types::PyNone;
 use pyo3::{Bound, Py, PyAny, PyResult, Python, pyclass, pymethods};
-use pyo3_bytes::PyBytes;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
-pub fn py_coro_to_future(py_coro: Py<PyAny>) -> PyResult<impl Future<Output = PyResult<Py<PyAny>>>> {
-    static EV_LOOP_ONCE: GILOnceCell<Py<PyAny>> = GILOnceCell::new();
+pub fn py_coro_waiter<'py>(py: Python<'py>, py_coro: Bound<'py, PyAny>) -> PyResult<PyCoroWaiter> {
+    static GET_EV_LOOP: GILOnceCell<Py<PyAny>> = GILOnceCell::new();
 
     let (tx, rx) = tokio::sync::oneshot::channel();
-    let cb = FutCompletor { tx: Some(tx) };
+    let cb = TaskCallback { tx: Some(tx) };
 
-    Python::with_gil(|py| {
-        let ev_loop = EV_LOOP_ONCE.import(py, "asyncio", "get_event_loop")?.call0()?;
-        let py_task = ev_loop.call_method1("create_task", (py_coro,))?;
-        py_task.call_method1("add_done_callback", (cb,)).map(|_| ())
-    })?;
+    let ev_loop = GET_EV_LOOP.import(py, "asyncio", "get_event_loop")?.call0()?;
+    let py_task = ev_loop.call_method1("create_task", (py_coro,))?;
+    py_task.call_method1("add_done_callback", (cb,))?;
 
-    Ok(async move {
-        match rx.await {
-            Ok(result) => result,
-            Err(e) => Err(PyRuntimeError::new_err(format!("Failed to receive task result: {}", e))),
+    Ok(PyCoroWaiter { rx })
+}
+
+pub struct PyCoroWaiter {
+    rx: tokio::sync::oneshot::Receiver<PyResult<Py<PyAny>>>,
+}
+impl Future for PyCoroWaiter {
+    type Output = PyResult<Py<PyAny>>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.get_mut().rx.poll_unpin(cx) {
+            Poll::Ready(Ok(res)) => Poll::Ready(res),
+            Poll::Ready(Err(e)) => {
+                Poll::Ready(Err(PyRuntimeError::new_err(format!("Failed to receive task result: {}", e))))
+            }
+            Poll::Pending => Poll::Pending,
         }
-    })
+    }
 }
 
 #[pyclass]
-struct FutCompletor {
+struct TaskCallback {
     tx: Option<tokio::sync::oneshot::Sender<PyResult<Py<PyAny>>>>,
 }
 #[pymethods]
-impl FutCompletor {
+impl TaskCallback {
     fn __call__(&mut self, task: Bound<PyAny>) -> PyResult<()> {
         self.tx
             .take()
             .ok_or_else(|| PyRuntimeError::new_err("tx already consumed"))?
-            .send(self.task_result(task))
+            .send(self.task_result(task).map(|res| res.unbind()))
             .map_err(|_| PyRuntimeError::new_err("Failed to send task result"))
     }
-
-    fn task_result(&self, task: Bound<PyAny>) -> PyResult<Py<PyAny>> {
+}
+impl TaskCallback {
+    fn task_result<'py>(&self, task: Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
         match task.call_method0("exception") {
             Ok(task_exc) => {
                 if task_exc.is_none() {
-                    task.call_method0("result").map(|res| res.unbind())
+                    task.call_method0("result")
                 } else {
                     Err(PyErr::from_value(task_exc))
                 }
             }
             Err(err) => Err(err),
-        }
-    }
-}
-
-pub fn py_async_gen_to_stream(async_gen: Py<PyAny>) -> impl TryStream<Ok = PyBytes, Error = PyErr> + 'static {
-    static ONCE_ANEXT: GILOnceCell<Py<PyAny>> = GILOnceCell::new();
-
-    try_stream! {
-        loop {
-            let fut = Python::with_gil(|py| {
-                let async_gen = async_gen.clone_ref(py);
-                let anext = ONCE_ANEXT.import(py, "builtins", "anext")?;
-                let coro = anext.call((async_gen, PyNone::get(py)), None)?;
-                Ok::<_, PyErr>(py_coro_to_future(coro.unbind()))
-            })??;
-
-            let res = fut.await?;
-
-            if let Some(bytes) = Python::with_gil(|py| res.extract::<Option<PyBytes>>(py))? {
-                yield bytes;
-            } else {
-                break;
-            };
         }
     }
 }

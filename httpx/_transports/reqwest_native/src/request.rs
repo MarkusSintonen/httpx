@@ -52,14 +52,12 @@ impl Request {
         }
     }
 
-    fn clone(&mut self) -> PyResult<Request> {
+    fn __copy__(&mut self) -> PyResult<Request> {
         let mut inner = self
             .inner
             .take()
             .ok_or_else(|| PyRuntimeError::new_err("Request was already sent"))?;
-        let new_inner = inner
-            .clone()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to clone request: {}", e)))?;
+        let new_inner = inner.try_clone()?;
         self.inner = Some(inner);
 
         Ok(Request {

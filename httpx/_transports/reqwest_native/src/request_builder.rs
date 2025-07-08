@@ -1,6 +1,7 @@
-use crate::http_types::{Extensions, HeaderMapExt, JsonValue, RequestBody, VersionExt};
+use crate::http_types::{Extensions, HeaderMapExt, JsonValue, VersionExt};
 use crate::multipart_form::MultipartForm;
 use crate::request::Request;
+use crate::request_body::RequestBody;
 use crate::request_wrapper::RequestWrapper;
 use crate::runtime::Runtime;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};

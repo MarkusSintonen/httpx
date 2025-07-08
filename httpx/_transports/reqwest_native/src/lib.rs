@@ -9,6 +9,7 @@ mod middleware;
 mod multipart_form;
 mod proxy_config;
 mod request;
+mod request_body;
 mod request_builder;
 mod request_wrapper;
 mod response;

@@ -1,4 +1,4 @@
-use crate::asyncio::py_coro_to_future;
+use crate::asyncio::py_coro_waiter;
 use crate::http_types::{Extensions, HeaderMapExt, StatusCodeExt, UrlExt, VersionExt};
 use crate::request_wrapper::RequestWrapper;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -33,26 +33,20 @@ impl Next {
     async fn run(&self, request: Py<RequestWrapper>) -> PyResult<Py<ResponseWrapper>> {
         if self.current < self.middlewares.len() {
             let cur = &self.middlewares[self.current];
-            let next = Python::with_gil(|py| {
-                let next = Next {
-                    client: self.client.clone(),
-                    middlewares: self.middlewares.clone(),
-                    current: self.current + 1,
-                };
-                Py::new(py, next)
-            })?;
+            let next = Next {
+                client: self.client.clone(),
+                middlewares: self.middlewares.clone(),
+                current: self.current + 1,
+            };
 
             let fut = Python::with_gil(|py| {
-                let coro = cur.call_method1(py, intern!(py, "handle"), (&request, &next))?;
-                py_coro_to_future(coro)
+                let coro = cur.bind(py).call_method1(intern!(py, "handle"), (request, next))?;
+                py_coro_waiter(py, coro)
             })?;
 
             let res = fut.await?;
 
-            Python::with_gil(|py| {
-                next.drop_ref(py);
-                Ok::<_, PyErr>(res.into_bound(py).downcast_into_exact::<ResponseWrapper>()?.unbind())
-            })
+            Python::with_gil(|py| Ok::<_, PyErr>(res.into_bound(py).downcast_into_exact::<ResponseWrapper>()?.unbind()))
         } else {
             let resp = RequestWrapper::py_execute(request, &self.client).await?;
             Python::with_gil(|py| Py::new(py, ResponseWrapper { response: Some(resp) }))
